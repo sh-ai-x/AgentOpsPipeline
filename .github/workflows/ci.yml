@@ -1,0 +1,54 @@
+name: CI
+
+# Branch-policy: warn-only on direct push to main (matches .githooks/pre-push locally).
+# Requires PR review before merge.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+jobs:
+  branch-policy:
+    name: branch-policy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      # Checkout is mandatory here even though scripts/branch-policy.sh
+      # only reads env vars today: consumer repos frequently extend the
+      # branch-policy job with custom checks that DO need the working
+      # tree (commit metadata, file content, git show). Removing this
+      # step broke sh-ai-x/claude-statusline at PR #9 (see issue #202):
+      # the upstream template had no checkout, so the consumer's local
+      # fix adding one was silently reverted on the next --force.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Direct push to main — policy violation recorded
+        run: bash scripts/branch-policy.sh
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
+        with:
+          python-version: "3.12"
+      - name: Run tests
+        run: bash scripts/test.sh
+
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5
+        with:
+          python-version: "3.12"
+      - name: Run validation suite
+        run: python3 scripts/validate.py

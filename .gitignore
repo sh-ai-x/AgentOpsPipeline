@@ -59,3 +59,15 @@ target/
 # dev-kit runtime state
 .dev-kit/logs/
 .dev-kit/hand-off/
+
+# >>> dev-kit >>>
+# dev-kit runtime artifacts (auto-installed by `dev-kit:ci-setup`; issue #202).
+# Marker `.dev-kit/ci-config.json` is intentionally tracked so that
+# `dev-kit:ci-setup --force` can detect drift. The paths below are
+# runtime state — write-only by dev-kit, regenerated on each run —
+# and must never be committed.
+.dev-kit/.cost-gate/
+.dev-kit/.eval-cache/
+.dev-kit/logs/
+logs/
+# <<< dev-kit <<<
