@@ -1,0 +1,5 @@
+{
+  "env": {
+    "DEV_KIT_MODE": "lite"
+  }
+}

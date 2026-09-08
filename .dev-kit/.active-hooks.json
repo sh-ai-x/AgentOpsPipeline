@@ -1,0 +1,62 @@
+{
+  "matrix": {
+    "bootstrap": {
+      "bash-guard": false,
+      "secret-scan": "read-only",
+      "slop-detector": false,
+      "stop-verify": false,
+      "tdd-guard": false
+    },
+    "build": {
+      "bash-guard": true,
+      "l4-todo-scan": true,
+      "secret-scan": true,
+      "slop-detector": true,
+      "stop-verify": true,
+      "tdd-guard": true
+    },
+    "design": {
+      "bash-guard": false,
+      "secret-scan": false,
+      "slop-detector": false,
+      "stop-verify": true,
+      "tdd-guard": false
+    },
+    "plan": {
+      "bash-guard": false,
+      "secret-scan": false,
+      "slop-detector": false,
+      "stop-verify": true,
+      "tdd-guard": false
+    },
+    "review": {
+      "bash-guard": false,
+      "l4-todo-scan": true,
+      "secret-scan": true,
+      "slop-detector": true,
+      "stop-verify": true,
+      "tdd-guard": false
+    },
+    "security": {
+      "bash-guard": false,
+      "l4-todo-scan": true,
+      "secret-scan": true,
+      "slop-detector": true,
+      "stop-verify": true,
+      "tdd-guard": false
+    },
+    "ship": {
+      "bash-guard": false,
+      "secret-scan": false,
+      "slop-detector": false,
+      "stop-verify": true,
+      "tdd-guard": false
+    }
+  },
+  "override": {
+    "disabled_hooks": [],
+    "env_override": {},
+    "strict_mode": false
+  },
+  "schema_version": "1.0.0"
+}
