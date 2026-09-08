@@ -455,7 +455,7 @@ footer {
     <tbody>
       <tr><td>Language</td><td>Python, uv, Pydantic, pytest, Ruff</td><td>Typed contracts and reproducible setup; pin tested versions</td></tr>
       <tr><td>Orchestration</td><td>LangGraph</td><td>Explicit state, conditional routing, checkpoints, interrupts/resume</td></tr>
-      <tr><td>Model integration</td><td>LangChain chat-model wrapper per provider; single <code>LLMAdapter</code> interface</td><td>Provider-agnostic graph; swappable via <code>provider</code>/<code>model</code> config; fake provider for CI</td></tr>
+      <tr><td>Model integration</td><td>LangChain chat-model wrapper per provider; single <code>LLMAdapter</code> interface</td><td>Provider-agnostic graph; default live <code>provider=minimax</code>, CI <code>provider=local-fake</code>; others (openai, anthropic) per-experiment</td></tr>
       <tr><td>MCP</td><td>Official Python SDK; custom document server + <code>@modelcontextprotocol/server-filesystem</code> (version-pinned, fixture-only scope)</td><td>Demonstrates integration and development; adopt a documented protocol revision</td></tr>
       <tr><td>API</td><td>FastAPI, Bearer/JWT auth</td><td>Run, approval; CLI for experiments and dataset review in MVP</td></tr>
       <tr><td>Persistence</td><td>PostgreSQL, SQLAlchemy, Alembic</td><td>Jobs, checkpoints, action ledger, dataset and experiment metadata</td></tr>
@@ -504,7 +504,17 @@ flowchart TD
 
 <section id="provider">
   <h2><span class="num">07</span>Provider &amp; Model Abstraction</h2>
-  <p>Config-driven: <code>provider ∈ {openai, anthropic, minimax, local-fake}</code>, <code>model=&ltid&gt;</code>. A single <code>LLMAdapter</code> interface returns normalized usage (<code>provider, model, prompt_tokens, completion_tokens, total_tokens, cost_usd</code>). LangChain chat-model wrapper per provider. <strong>No provider-specific code paths in the agent graph.</strong> Default for development and CI: <code>provider=local-fake</code>. Live provider configured per experiment via environment or manifest.</p>
+  <p>Config-driven: <code>provider ∈ {openai, anthropic, minimax, local-fake}</code>, <code>model=&ltid&gt;</code>. A single <code>LLMAdapter</code> interface returns normalized usage (<code>provider, model, prompt_tokens, completion_tokens, total_tokens, cost_usd</code>). LangChain chat-model wrapper per provider. <strong>No provider-specific code paths in the agent graph.</strong></p>
+
+  <div class="callout">
+    <strong>Defaults</strong>
+    <strong>CI / unit tests</strong>: <code>provider=local-fake</code> — deterministic scripted responses, no API calls, no network.<br>
+    <strong>Live experiments</strong>: <code>provider=minimax</code> (default).<br>
+    <strong>Other providers</strong> (<code>openai</code>, <code>anthropic</code>) available per-experiment via environment or manifest.
+  </div>
+
+  <p><strong>No GPU inference in this project.</strong> All model calls go over HTTPS to a hosted LLM API. The agent runs on a CPU-only container; provider billing and rate limits are the only cost axes.</p>
+
   <p>This shape lets you ship with MiniMax today and swap to OpenAI or Anthropic later without touching the workflow code.</p>
 </section>
 

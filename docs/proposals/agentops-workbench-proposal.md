@@ -28,7 +28,7 @@ Task families: straightforward answer, multi-document answer, ambiguous request,
 |---|---|---|
 | Language | Python, uv, Pydantic, pytest, Ruff | Typed contracts and reproducible setup; pin tested versions |
 | Orchestration | LangGraph | Explicit state, conditional routing, checkpoints, interrupts/resume |
-| Model integration | LangChain chat-model wrapper per provider; single `LLMAdapter` interface | Provider-agnostic graph; swappable via `provider`/`model` config; fake provider for CI |
+| Model integration | LangChain chat-model wrapper per provider; single `LLMAdapter` interface | Provider-agnostic graph; default live `provider=minimax`, CI `provider=local-fake`; others (openai, anthropic) per-experiment |
 | MCP | Official Python SDK; custom document server + `@modelcontextprotocol/server-filesystem` (version-pinned, fixture-only scope) | Demonstrates integration and development; adopt a documented protocol revision |
 | API | FastAPI, Bearer/JWT auth | Run, approval; CLI for experiments and dataset review in MVP |
 | Persistence | PostgreSQL, SQLAlchemy, Alembic | Jobs, checkpoints, action ledger, dataset and experiment metadata |
@@ -68,7 +68,15 @@ Authentication supplies the principal; the model cannot choose one. Authorize do
 
 ## Provider and Model Abstraction
 
-Config-driven: `provider ∈ {openai, anthropic, minimax, local-fake}`, `model=<id>`. A single `LLMAdapter` interface returns normalized usage (`provider, model, prompt_tokens, completion_tokens, total_tokens, cost_usd`). LangChain chat-model wrapper per provider. **No provider-specific code paths in the agent graph.** Default for development and CI: `provider=local-fake`. Live provider configured per experiment via environment or manifest.
+Config-driven: `provider ∈ {openai, anthropic, minimax, local-fake}`, `model=<id>`. A single `LLMAdapter` interface returns normalized usage (`provider, model, prompt_tokens, completion_tokens, total_tokens, cost_usd`). LangChain chat-model wrapper per provider. **No provider-specific code paths in the agent graph.**
+
+Defaults:
+
+- **CI / unit tests**: `provider=local-fake` — deterministic scripted responses, no API calls, no network.
+- **Live experiments**: `provider=minimax` (default) — see Tech Stack row "Model integration" for the chosen adapter.
+- **Other providers** (`openai`, `anthropic`) available per-experiment via environment or manifest.
+
+**No GPU inference in this project.** All model calls go over HTTPS to a hosted LLM API. The agent runs on a CPU-only container; provider billing and rate limits are the only cost axes.
 
 This shape lets you ship with MiniMax today and swap to OpenAI or Anthropic later without touching the workflow code.
 
