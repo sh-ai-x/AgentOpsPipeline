@@ -24,19 +24,21 @@ class GraphOutput:
 
 _CLASSIFY_PROMPT = (
     "You are a triage classifier for a software support agent. "
-    "Given the user task, respond with EXACTLY one of these tokens on a single line: "
-    "ANSWER, REFUSE, or CLARIFY.\n"
-    "Use ANSWER if the task can be answered from retrieved documentation.\n"
-    "Use REFUSE if the corpus has no relevant evidence.\n"
-    "Use CLARIFY if the task is ambiguous and needs more info from the user.\n\n"
+    "Given the user task AND the retrieved docs, respond with EXACTLY one of "
+    "ANSWER, REFUSE, or CLARIFY on a single line.\n"
+    "Use ANSWER if the docs contain enough evidence.\n"
+    "Use REFUSE if the docs have no relevant evidence.\n"
+    "Use CLARIFY if the task is too ambiguous to answer even with the docs.\n\n"
+    "Retrieved docs:\n{docs}\n\n"
     "Task: {task}"
 )
 
 
 def _classify(adapter: LLMAdapter, task: str) -> str:
     """Return one of: answer, refuse, clarify. Defensive: picks the first token."""
+    docs = _retrieve_docs(task)
     resp = adapter.chat(
-        [{"role": "user", "content": _CLASSIFY_PROMPT.format(task=task)}]
+        [{"role": "user", "content": _CLASSIFY_PROMPT.format(docs=docs, task=task)}]
     )
     text = (resp.content or "").strip().upper()
     for token in ("ANSWER", "REFUSE", "CLARIFY"):
@@ -46,10 +48,29 @@ def _classify(adapter: LLMAdapter, task: str) -> str:
 
 
 _ANSWER_PROMPT = (
-    "You are a support agent. Answer the user task using ONLY the retrieved docs. "
-    "If the docs do not contain the answer, respond with the literal token REFUSE.\n\n"
+    "You are a support agent. Answer the user task using ONLY the retrieved docs "
+    "below. If the docs do not contain the answer, respond with the literal token REFUSE.\n\n"
+    "Retrieved docs:\n{docs}\n\n"
     "Task: {task}"
 )
+
+
+def _retrieve_docs(task: str, docs_dir: str = "fixtures/docs") -> str:
+    """Lexical retrieval over the fixture corpus. Top-3 docs that match task tokens."""
+    from pathlib import Path
+    tokens = [t.lower() for t in task.split() if len(t) >= 3][:10]
+    if not tokens:
+        return "(no relevant docs found)"
+    matches: list[tuple[str, int, str]] = []
+    for f in sorted(Path(docs_dir).glob("*.md")):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        hits = sum(text.lower().count(t) for t in tokens)
+        if hits > 0:
+            matches.append((f.stem, hits, text[:500]))
+    matches.sort(key=lambda m: -m[1])
+    if not matches:
+        return "(no relevant docs found)"
+    return "\n\n--\n\n".join(f"[{stem}]: {snippet}" for stem, _, snippet in matches[:3])
 
 _REFUSE_MESSAGE = (
     "Insufficient evidence in the corpus to answer confidently. "
@@ -85,8 +106,10 @@ def run_fixed_graph(adapter: LLMAdapter, task: str, *, evidence: str = "") -> Gr
         )
 
     # route == answer
+    retrieved = _retrieve_docs(task)
+    prompt = _ANSWER_PROMPT.format(docs=retrieved, task=task)
     resp = adapter.chat(
-        [{"role": "user", "content": _ANSWER_PROMPT.format(task=task)}]
+        [{"role": "user", "content": prompt}]
     )
     content = (resp.content or "").strip()
     if "REFUSE" in content.upper()[:32]:
