@@ -11,6 +11,7 @@ Per the proposal:
 from __future__ import annotations
 
 import json
+import time
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -101,7 +102,9 @@ class Tracer:
 
 
 def _now_ns() -> int:
-    return int(datetime.now(timezone.utc).timestamp() * 1_000_000_000)
+    # time.time_ns() returns a true int (no float precision loss).
+    # datetime.now(tz).timestamp() * 1e9 overflows float precision past 2^53.
+    return time.time_ns()
 
 
 def trace_to_jsonl(tracer: Tracer) -> str:

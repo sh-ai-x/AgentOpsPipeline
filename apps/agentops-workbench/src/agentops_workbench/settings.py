@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # DB
     database_url: str = "sqlite:///./agentops.db"
 
+    # Document corpus (MCP document server + lexical retrieval)
+    docs_dir: str = "fixtures/docs"
+
+    # Trace export (OTel spans per run)
+    runs_dir: str = "./runs"
+
     # Auth: principal for local dev
     dev_principal_id: str = "dev-user"
 
