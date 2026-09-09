@@ -1,12 +1,30 @@
 # Evidence Card — AgentOps Workbench
 
+## Where this lives
+
+This project was originally built in a standalone GitHub repo
+(`sh-ai-x/agentops-workbench`, now archived). It now lives at
+`apps/agentops-workbench/` inside `sh-ai-x/AgentOpsPipeline`. The
+surrounding dev-harness-kit (hooks/, lib/, bin/, tools/) is the
+Claude Code tooling used to ship this project.
+
 ## What we built
 
-A LangGraph / FastAPI support-ops agent integrating custom document MCP server + pinned @modelcontextprotocol/server-filesystem (fixture-only scope). Exposes a REST surface (POST /v1/runs, /v1/runs/{id}/cancel, /v1/actions) with JWT auth and a Streamlit UI skeleton.
+A LangGraph / FastAPI support-ops agent integrating a custom document
+MCP server + pinned `@modelcontextprotocol/server-filesystem`
+(fixture-only scope). Exposes a REST surface (POST /v1/runs, GET
+/v1/runs/{id}, POST /v1/runs/{id}/cancel, POST /v1/actions) with JWT
+auth and a Streamlit UI skeleton.
 
 ## What we measured
 
-Held-out evaluation: 6 cases x 2 trials x 2 topologies = 24 runs, identical corpus / prompt / budget / permissions across topologies. See `experiments/held-out-v1/` after running `uv run python -m agentops_workbench.experiments.run_held_out`.
+Held-out evaluation: 6 cases x 2 trials x 2 topologies = 24 runs,
+identical corpus / prompt / budget / permissions across topologies.
+Results at `experiments/held-out-v1/`.
+
+Local-fake dry-run (provider=local-fake, deterministic) wrote 24
+outcomes. Live numbers require a `provider=minimax` run with the API
+key sourced from the dev-harness-kit `.env`.
 
 ## What we shipped
 
@@ -17,32 +35,38 @@ Held-out evaluation: 6 cases x 2 trials x 2 topologies = 24 runs, identical corp
 
 ## Personal contributions
 
-All design decisions, code, tests, and 7-step implementation plan are in this repo's git history (commits authored by sh-ai-x <tkd1496@gmail.com>).
+All design decisions, code, tests, and the 7-step implementation plan
+are in this repo's git history (commits authored by
+`sh-ai-x <tkd1496@gmail.com>`).
 
 ## Limitations
 
-- Held-out set is 6 cases (small by design; proposal explicitly labels this "illustrative, not statistically settled").
-- The 24-run experiment was the dry-run against `provider=local-fake`. Live numbers require a `provider=minimax` run with the API key from `dev-harness-kit/.env`.
-- Topology comparison does not vary temperature / model / corpus; any drift invalidates the comparison (R4 invariant).
+- Held-out set is 6 cases (small by design; proposal explicitly labels
+  this "illustrative, not statistically settled").
+- Topology comparison does not vary temperature / model / corpus; any
+  drift invalidates the comparison (R4 invariant).
+- Live experiment was deferred; the local-fake dry-run populated the
+  outcomes schema but cannot speak to live model quality.
 
 ## How to reproduce
 
-```
 ```bash
-cd ~/dev/agentops-workbench
+cd apps/agentops-workbench
 uv sync --extra dev
 cp .env.example .env
-# edit .env: paste MINIMAX_API_KEY from /Users/sanghee/dev/dev-harness-kit/.env
+# paste MINIMAX_API_KEY from /Users/sanghee/dev/dev-harness-kit/.env
 AGENTOPS_PROVIDER=minimax uv run python -m agentops_workbench.experiments.run_held_out
 ```
 
 ## Resumé bullet (from proposal template)
 
-> Built a LangGraph/FastAPI support agent integrating 2 MCP servers; compared 2 workflow configurations on 6 scenarios and shipped the fixed graph based on task success, recovery, latency and cost.
+> Built a LangGraph/FastAPI support agent integrating 2 MCP servers;
+> compared 2 workflow configurations on 6 held-out scenarios and shipped
+> the fixed graph based on task success, recovery, latency and cost.
 
 ## References
 
-- Proposal: `docs/proposals/agentops-workbench-proposal.md`
-- Plan: dev-harness-kit `.dev-kit/round-1/phases/build/step{1..7}.md`
+- Proposal: `../../docs/proposals/agentops-workbench-proposal.md`
+- Plan: `../../../.dev-kit/round-1/{PRD.md, phases/build/step1..7.md}`
 - ADRs: `docs/adr/0001..0006-*.md`
-- Held-out artifacts (after running the experiment): `experiments/held-out-v1/`
+- Held-out artifacts: `experiments/held-out-v1/`
