@@ -41,15 +41,13 @@ class MinimaxAdapter(LLMAdapter):
         )
         content = (resp.choices[0].message.content or "").strip()
         u = resp.usage
-        return ChatResult(
-            content=content,
-            usage=Usage(
-                provider=self.provider,
-                model=self.model,
-                prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
-                completion_tokens=getattr(u, "completion_tokens", 0) or 0,
-                total_tokens=getattr(u, "total_tokens", 0) or 0,
-                cost_usd=0.0,  # filled in by Step 4 scorer; left at 0 for MVP
-            ),
-            raw=resp,
+        usage = Usage(
+            provider=self.provider,
+            model=self.model,
+            prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(u, "completion_tokens", 0) or 0,
+            total_tokens=getattr(u, "total_tokens", 0) or 0,
+            cost_usd=0.0,
         )
+        self._last_usage = usage
+        return ChatResult(content=content, usage=usage, raw=resp)

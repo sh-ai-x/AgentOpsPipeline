@@ -2,15 +2,15 @@
   "budget": {
     "max_usd": 5.0
   },
-  "code_sha": "5547066",
+  "code_sha": "a5b489b",
   "dataset_version": "v1",
   "held_out_sha256": "d3bef8c35a3bf9de539ab67a988e83a2d5434746bc8c6001f85ddf569dc8d0a5",
-  "model": "local-fake-v1",
+  "model": "MiniMax-M3",
   "prompt_version": "v1_baseline",
-  "provider": "local-fake",
+  "provider": "minimax",
   "selected_topologies": [
     "fixed",
     "single_agent"
   ],
-  "started_at": "2026-09-09T00:39:38+00:00"
+  "started_at": "2026-09-09T06:19:17+00:00"
 }

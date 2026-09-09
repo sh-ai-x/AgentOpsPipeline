@@ -53,3 +53,8 @@ class LLMAdapter(ABC):
     def close(self) -> None:  # pragma: no cover - default no-op
         """Release any held resources (HTTP clients, etc.)."""
         return None
+
+    @property
+    def last_usage(self) -> "Usage | None":
+        """Most-recent Usage from this adapter, or None if no call yet."""
+        return getattr(self, "_last_usage", None)

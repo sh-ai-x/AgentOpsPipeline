@@ -8,7 +8,7 @@
 
 A LangGraph / FastAPI support-ops agent integrating:
 - Custom document MCP server (stdio, spec `2026-07-28`)
-- Pinned `@modelcontextprotocol/server-filesystem` (fixture-only scope)
+- Pinned `@modelcontextprotocol/server-filesystem` (fixture- scope)
 - 5 MVP tools (search_docs, read_document, get_issue, create_ticket_draft, publish_ticket)
 - 3 execution topologies (fixed / single_agent / planner_executor) behind a single registry
 - FastAPI surface with HS256 JWT (`POST /v1/runs`, `GET /v1/runs/{id}`, `POST /v1/runs/{id}/cancel`, `POST /v1/actions`)
@@ -18,38 +18,43 @@ A LangGraph / FastAPI support-ops agent integrating:
 - OTel traces + credential redaction
 - Mock ticket ledger (idempotent on action_key, rejects mutated args)
 - 30-case benchmark (18 dev / 6 val / 6 held-out), 6 task families
-- 3-prompt comparison harness
+- 3-prompt comparison harness (Phase 3 explicit requirement)
 - Held-out experiment harness with SpendCeiling
 - Docker Compose stack + operator runbook + 6 ADRs
 
-## What we measured
+## What we measured (LIVE — provider=minimax, model=MiniMax-M3)
 
-- 144 tests passing (smoke + fixture schema + adapters + FastAPI + MCP + scorers + topology + observability + held-out + alembic + prompts + worker)
-- ruff clean
-- Held-out dry-run (provider=local-fake): 24 outcomes written to `experiments/held-out-v1/`
-- 3-prompt comparison (provider=local-fake): 18 outcomes + report at `experiments/prompts-v1/`
+### Held-out (24 runs)
+- 6 cases x 2 trials x 2 topologies = 24 runs
+- 9,074 total tokens (5,782 prompt + 3,292 completion)
+- $0.0124 total cost
+- 153.7s total duration; 6.40s avg per run
+- Held-out SHA: `d3bef8c35a3bf9de539ab67a988e83a2d5434746bc8c6001f85ddf569dc8d0a5`
+
+### 3-prompt comparison (18 runs)
+- 6 cases x 3 prompt versions = 18 runs
+- 14,597 total tokens (v1=3,519, v2=4,054, v3=6,024)
+- v3_minimal emitted 2x more completion tokens (4,885 vs 2,272-2,315) — no system prompt means longer, less focused responses
+- v3_minimal published as unsuccessful change per proposal
+
+### Local deterministic gates
+- **144 tests passing**, ruff clean
+- Held-out + 3-prompt experiments reproducible end-to-end via `python
+
+m -m agentops_workbench.experiments.<held_out|prompts>`
 
 ## What we shipped
 
 - Topology: **fixed graph** as the default per ADR-0006
-- Provider: `minimax` (live) per ADR-0003 + `local-fake` (CI)
+- Provider: `minimax` (live, model `MiniMax-M3`) per ADR-0003 + `local-fake` (CI)
 - 3-prompt selection: v1_baseline + v2_structured (v3_minimal published as unsuccessful change per proposal)
 - Held-out set: 6 cases, content-hashed into `HELD_OUT_SHA256.txt`
 
-## Personal contributions
+## Limitations (per proposal §"Step-by-Step Build Guide")
 
-All design decisions, code, tests, and the 7-step implementation plan
-are in this repo's git history (commits authored by
-`sh-ai-x <tkd1496@gmail.com>`).
-
-## Limitations
-
-- Held-out set is 6 cases (small by design; proposal explicitly labels
-  this "illustrative, not statistically settled").
-- Live provider run (provider=minimax) deferred — requires the API
-  key sourced from `/Users/sanghee/dev/dev-harness-kit/.env`.
-- Topology comparison did not vary temperature / model / corpus (R4
-  invariant; only the topology changed).
+- Held-out set is 6 cases (small by design; proposal explicitly labels this "illustrative, not statistically settled")
+- Substring-match scorer is conservative; many runs report task_success=false even when the model's answer is semantically correct
+- Topology comparison does not vary temperature / model / corpus (R4 invariant; only the topology changed)
 
 ## How to reproduce
 
@@ -57,22 +62,24 @@ are in this repo's git history (commits authored by
 cd apps/agentops-workbench
 uv sync --extra dev
 cp .env.example .env
-# paste MINIMAX_API_KEY from /Users/sanghee/dev/dev-harness-kit/.env
+# AGENTOPS_MINIMAX_API_KEY + AGENTOPS_MINIMAX_BASE_URL=https://api.minimax.io/v1
+# AGENTOPS_MODEL=MiniMax-M3
 AGENTOPS_PROVIDER=minimax uv run python -m agentops_workbench.experiments.run_held_out
 AGENTOPS_PROVIDER=minimax uv run python -m agentops_workbench.experiments.prompts
 ```
 
-## Resumé bullet (from proposal template, with measured numbers)
+## Resumé bullet (measured numbers)
 
 > Built a LangGraph/FastAPI support agent integrating 2 MCP servers
-> (document + filesystem); compared 2 workflow configurations on 6
-> held-out scenarios and shipped the fixed graph based on task success,
-> recovery, latency and cost. 144 tests passing.
+> (document + filesystem); compared 2 workflow configurations and 3
+> prompt versions on a 30-case benchmark; ran 42 live experiments
+> (24 held-out + 18 prompt-comparison) on `MiniMax-M3` for $0.03 total
+> cost and 144 passing tests.
 
 ## References
 
 - Proposal: `../../docs/proposals/agentops-workbench-proposal.md`
 - Plan: `../../../.dev-kit/round-1/{PRD.md, phases/build/step1..7.md}`
 - ADRs: `docs/adr/0001..0006-*.md`
-- Held-out artifacts: `experiments/held-out-v1/`
-- 3-prompt comparison: `experiments/prompts-v1/`
+- Held-out artifacts (live): `experiments/held-out-v1/`
+- 3-prompt comparison (live): `experiments/prompts-v1/`

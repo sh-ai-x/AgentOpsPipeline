@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # Provider
     provider: str = "local-fake"
-    model: str = "local-fake-v1"
+    model: str = "MiniMax-M3"  # valid on api.minimax.io/v1
     minimax_api_key: str = ""
     minimax_base_url: str = "https://api.minimax.chat/v1"
     openai_api_key: str = ""

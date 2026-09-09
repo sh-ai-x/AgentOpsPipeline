@@ -1,0 +1,46 @@
+{
+  "adapter_capabilities": {
+    "executor_close": true,
+    "executor_enroll": true,
+    "session_close": true,
+    "session_enroll": true
+  },
+  "bounded_errors": [],
+  "collected_at": "2026-09-09T01:29:01.893263Z",
+  "contract_version": "effectiveness-collection-v1",
+  "counts": {
+    "closed": 0,
+    "conflicting_terminal": 0,
+    "distinct_units": 1,
+    "enrolled": 1,
+    "missing_start": 0,
+    "missing_terminal": 1,
+    "paired": 0,
+    "success": 0,
+    "unexpected_units": 0,
+    "unresolved": 1
+  },
+  "cutoff": "2026-09-09T01:29:01.893263Z",
+  "findings": [],
+  "journal_hash": "84a2ad362d3afd2a484b4a22556f8b1dad04353cf65b0aeb0d805facf41c7a76",
+  "journal_seq": 4,
+  "origin": "runtime",
+  "policy": {
+    "coverage_threshold": 0.95
+  },
+  "quality_availability": {
+    "first_pass": "unavailable",
+    "learning": "unavailable",
+    "prevention": "unavailable",
+    "recovery": "unavailable",
+    "stability": "unavailable"
+  },
+  "ratios": {
+    "coverage": null,
+    "success": null
+  },
+  "readiness": "INSUFFICIENT_EVIDENCE",
+  "retention_floor": "20260909",
+  "root_id": "/Users/sanghee/dev/AgentOpsPipeline/.worktrees/consolidate-workbench",
+  "schema_version": 1
+}

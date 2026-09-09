@@ -1,8 +1,8 @@
 # Held-out uncertainty
 
 - Held-out SHA: `d3bef8c35a3bf9de539ab67a988e83a2d5434746bc8c6001f85ddf569dc8d0a5` (frozen; do not edit)
-- Code SHA: `5547066`
-- Provider: `local-fake`
+- Code SHA: `a5b489b`
+- Provider: `minimax`
 - Total runs: 24
 
 ## Per-topology summary

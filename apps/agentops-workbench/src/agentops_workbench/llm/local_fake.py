@@ -62,14 +62,13 @@ class LocalFakeAdapter(LLMAdapter):
         content = scripted.get("content", "")
         completion_tokens = max(1, len(content) // 4)
 
-        return ChatResult(
-            content=content,
-            usage=Usage(
-                provider=self.provider,
-                model=self.model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=prompt_tokens + completion_tokens,
-                cost_usd=0.0,
-            ),
+        usage = Usage(
+            provider=self.provider,
+            model=self.model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            cost_usd=0.0,
         )
+        self._last_usage = usage
+        return ChatResult(content=content, usage=usage)

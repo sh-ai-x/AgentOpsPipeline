@@ -60,7 +60,9 @@ def run(repo_root: Path, *, output_dir: Path | None = None) -> tuple[list[RunOut
                 start_ms = _now_ms()
                 try:
                     result = run_topology(topology, adapter, case.task)
-                    usage = Usage(
+                    # Capture real usage from the LAST adapter call the graph made
+                    last = adapter.last_usage
+                    usage = last or Usage(
                         provider=adapter.provider,
                         model=adapter.model,
                         prompt_tokens=0,

@@ -57,16 +57,16 @@ def run_prompt(repo_root: Path, *, output_dir: Path | None = None) -> list[Promp
             task_text = prompt_template.replace("{task}", case.task)
             result = run_fixed_graph(adapter, task_text)
             ok = task_success(case, result.answer or "")
-            usage = adapter.chat([{"role": "user", "content": task_text}])  # to populate usage
+            chat_result = adapter.chat([{"role": "user", "content": task_text}])
             outcomes.append(PromptRunOutcome(
                 run_id=run_id,
                 case_id=case.id,
                 family_id=case.family_id,
                 prompt_version=prompt_name,
                 task_success=ok,
-                prompt_tokens=usage.usage.prompt_tokens,
-                completion_tokens=usage.usage.completion_tokens,
-                cost_usd=usage.usage.cost_usd,
+                prompt_tokens=chat_result.usage.prompt_tokens,
+                completion_tokens=chat_result.usage.completion_tokens,
+                cost_usd=chat_result.usage.cost_usd,
                 duration_ms=_now_ms() - start_ms,
             ))
 
