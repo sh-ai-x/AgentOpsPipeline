@@ -1,6 +1,5 @@
 name: PR Review
 
-<<<<<<< HEAD
 # Auto-run /dev-kit:review (3-dim) on every PR. dev-kit plugin is installed
 # from this checkout via a local marketplace symlink so the namespaced
 # skill resolves.
@@ -13,7 +12,6 @@ name: PR Review
 #   Approve            (no critical, no major)  → success + auto-approve
 #   Changes Requested  (any major)              → failure
 #   Blocked            (any critical)           → failure
-=======
 # Auto-run /dev-kit:review (3-dim) on every
 # PR, in parallel. dev-kit plugin is installed from this checkout via a
 # local marketplace symlink so the namespaced skills resolve.
@@ -22,7 +20,6 @@ name: PR Review
 #   Approve            (no critical, no major in review) → success + auto-approve
 #   Changes Requested  (any major in either)                              → failure
 #   Blocked            (any critical in either)                           → failure
->>>>>>> origin/main
 #
 # Empty-verdict gate (0.1.3+): missing verdict defaults to Approve with
 # ::warning:: in BOTH pull_request and workflow_dispatch modes. The
@@ -443,7 +440,6 @@ jobs:
           gh pr comment "$PR_NUMBER" --body "$audit_body"
 
   gate:
-<<<<<<< HEAD
     # Severity gate: same fork-safety guard. Pull from job outputs --
     # the if: always() needs to stay so the gate runs even when agents
     # were skipped, so we AND it with the fork check.
@@ -453,7 +449,6 @@ jobs:
         github.event.pull_request.head.repo.full_name == github.repository
       )
     name: severity gate (review)
-=======
     # Severity gate — review only (security excluded per session request).
     # Reads verdict directly from the review job's output. Passes when
     # review verdict is Approve; fails on Changes Requested / Blocked /
@@ -462,7 +457,6 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event.pull_request.head.repo.full_name == github.repository
     name: severity gate (review only)
->>>>>>> origin/main
     runs-on: ubuntu-latest
     needs: [review]
     permissions:
@@ -476,7 +470,6 @@ jobs:
         if: always()
         run: |
           R="${{ needs.review.outputs.verdict }}"
-<<<<<<< HEAD
           # Security job removed from this workflow — pin its inputs to a
           # passing constant so the worst-of logic below reduces to R.
           S="Approve"
@@ -703,7 +696,6 @@ jobs:
               || echo "::warning::gh pr review --approve rejected. Set APPROVE_TOKEN secret to a PAT for real auto-approval; verdict itself was Approve."
           else
             echo "Verdict is '$worst' -- not auto-approving."
-=======
           R_RESULT="${{ needs.review.result }}"
           echo "review=$R (result=$R_RESULT)"
           if [ "$R" = "Approve" ]; then
@@ -713,7 +705,6 @@ jobs:
           if [ "$R" = "PARSE_FAILED" ] || [ -z "$R" ]; then
             echo "::warning::Review verdict empty/parse-failed (result=$R_RESULT); treating as non-blocking per empty-verdict contract."
             exit 0
->>>>>>> origin/main
           fi
           echo "::error::Review verdict is '$R' (not Approve); gate fails."
           exit 1
