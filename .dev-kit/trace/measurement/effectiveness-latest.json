@@ -6,7 +6,7 @@
     "session_enroll": true
   },
   "bounded_errors": [],
-  "collected_at": "2026-09-09T06:29:49.813676Z",
+  "collected_at": "2026-09-09T06:58:43.107795Z",
   "contract_version": "effectiveness-collection-v1",
   "counts": {
     "closed": 0,
@@ -20,10 +20,10 @@
     "unexpected_units": 0,
     "unresolved": 1
   },
-  "cutoff": "2026-09-09T06:29:49.813676Z",
+  "cutoff": "2026-09-09T06:58:43.107795Z",
   "findings": [],
-  "journal_hash": "85ac2f59ff7439767256f2fdf430512bf6c297a78927a3437052aca3052a5c1d",
-  "journal_seq": 6,
+  "journal_hash": "1d9bcd2cf749727ee6b5471fa12735064c0b11d44a6b342a992976ad66bfbe70",
+  "journal_seq": 10,
   "origin": "runtime",
   "policy": {
     "coverage_threshold": 0.95
