@@ -1,5 +1,6 @@
 name: PR Review
 
+<<<<<<< HEAD
 # Auto-run /dev-kit:review (3-dim) on every PR. dev-kit plugin is installed
 # from this checkout via a local marketplace symlink so the namespaced
 # skill resolves.
@@ -12,6 +13,16 @@ name: PR Review
 #   Approve            (no critical, no major)  → success + auto-approve
 #   Changes Requested  (any major)              → failure
 #   Blocked            (any critical)           → failure
+=======
+# Auto-run /dev-kit:review (3-dim) on every
+# PR, in parallel. dev-kit plugin is installed from this checkout via a
+# local marketplace symlink so the namespaced skills resolve.
+#
+# Severity gate + auto-approve (per claude-review-plugins spec):
+#   Approve            (no critical, no major in review) → success + auto-approve
+#   Changes Requested  (any major in either)                              → failure
+#   Blocked            (any critical in either)                           → failure
+>>>>>>> origin/main
 #
 # Empty-verdict gate (0.1.3+): missing verdict defaults to Approve with
 # ::warning:: in BOTH pull_request and workflow_dispatch modes. The
@@ -118,8 +129,7 @@ jobs:
           # fine-grained PAT with contents:read on sh-ai-x/dev-harness-kit
           # as a repo secret named DEV_KIT_GITHUB_TOKEN.
           if [ -f "$GITHUB_WORKSPACE/.claude-plugin/plugin.json" ] \
-             && [ -d "$GITHUB_WORKSPACE/skills/review" ] \
-             && [ -d "$GITHUB_WORKSPACE/skills/security" ]; then
+             && [ -d "$GITHUB_WORKSPACE/skills/review" ]; then
             ln -sfn "$GITHUB_WORKSPACE" ~/.claude/plugins/marketplaces/dev-kit
             echo "::notice::dev-kit self-install: symlinked $GITHUB_WORKSPACE"
           else
@@ -139,7 +149,6 @@ jobs:
           # Always verify the install succeeded (catches both paths).
           test -f ~/.claude/plugins/marketplaces/dev-kit/.claude-plugin/plugin.json
           test -d ~/.claude/plugins/marketplaces/dev-kit/skills/review
-          test -d ~/.claude/plugins/marketplaces/dev-kit/skills/security
           echo "dev-kit plugin installed: $(readlink ~/.claude/plugins/marketplaces/dev-kit || echo 'real')"
 
       - name: Resolve PR + provider
@@ -417,7 +426,7 @@ jobs:
             # 6 attempts x 5s sleep (30s total budget, spans the full ~30s
             # race window) closes the gap without burning CI minutes.
             # The retry-loop is delegated to _verdict_comments_fallback.sh
-            # so the review + security jobs share a single SSOT (the
+            # so the review job uses a single SSOT (the
             # pre-F1 fix copy-pasted this 25-line block into both jobs).
             comment_verdict=$(CUTOFF="$CUTOFF" JOB_NAME=review WORKSPACE="${{ github.workspace }}" "${{ github.workspace }}/.github/workflows/_verdict_comments_fallback.sh" "$PR_NUMBER")
             if [ -n "$comment_verdict" ]; then
@@ -434,6 +443,7 @@ jobs:
           gh pr comment "$PR_NUMBER" --body "$audit_body"
 
   gate:
+<<<<<<< HEAD
     # Severity gate: same fork-safety guard. Pull from job outputs --
     # the if: always() needs to stay so the gate runs even when agents
     # were skipped, so we AND it with the fork check.
@@ -443,6 +453,16 @@ jobs:
         github.event.pull_request.head.repo.full_name == github.repository
       )
     name: severity gate (review)
+=======
+    # Severity gate — review only (security excluded per session request).
+    # Reads verdict directly from the review job's output. Passes when
+    # review verdict is Approve; fails on Changes Requested / Blocked /
+    # empty / non-Approve verdicts.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    name: severity gate (review only)
+>>>>>>> origin/main
     runs-on: ubuntu-latest
     needs: [review]
     permissions:
@@ -451,19 +471,12 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
-      EVENT_NAME: ${{ github.event_name }}
     steps:
-      - name: Checkout (for gh CLI git discovery)
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 1
-
-      - name: Combined verdict gate
+      - name: Read review verdict + auto-approve
+        if: always()
         run: |
-          # Read verdicts directly from each job's outputs (set by the
-          # 'Extract <skill> verdict' post-step in review + security jobs).
-          # This is robust: no fragile comment-body matching required.
           R="${{ needs.review.outputs.verdict }}"
+<<<<<<< HEAD
           # Security job removed from this workflow — pin its inputs to a
           # passing constant so the worst-of logic below reduces to R.
           S="Approve"
@@ -690,4 +703,17 @@ jobs:
               || echo "::warning::gh pr review --approve rejected. Set APPROVE_TOKEN secret to a PAT for real auto-approval; verdict itself was Approve."
           else
             echo "Verdict is '$worst' -- not auto-approving."
+=======
+          R_RESULT="${{ needs.review.result }}"
+          echo "review=$R (result=$R_RESULT)"
+          if [ "$R" = "Approve" ]; then
+            echo "Review verdict is Approve → passing gate."
+            exit 0
           fi
+          if [ "$R" = "PARSE_FAILED" ] || [ -z "$R" ]; then
+            echo "::warning::Review verdict empty/parse-failed (result=$R_RESULT); treating as non-blocking per empty-verdict contract."
+            exit 0
+>>>>>>> origin/main
+          fi
+          echo "::error::Review verdict is '$R' (not Approve); gate fails."
+          exit 1
