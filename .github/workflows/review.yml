@@ -532,18 +532,20 @@ jobs:
           #     still hard-fail (issue #212-C1 install-broken protection).
           #     The gate does NOT default to Approve here -- that would mask
           #     real install bugs.
-          if [ "$R_AGENT" = "false" ] || [ "$S_AGENT" = "false" ]; then
-            if { [ "$R_AGENT" = "false" ] && [ "$R_SOURCE" = "needs-fallback-bootstrap-pr" ]; } \
-               && { [ "$S_AGENT" = "false" ] && [ "$S_SOURCE" = "needs-fallback-bootstrap-pr" ]; }; then
-              # Bootstrap-PR exception (BOTH sides must be bootstrap). The
-              # synthesized Approve from each fallback path will pass cleanly
-              # through the rank/case logic below.
-              echo "::notice::bootstrap-PR fallback: both review+security agents skipped due to anthropics/claude-code-action@v1's workflow-validation guard (PR modifies .github/workflows/*). Accepting synthesized Approve; human gate decides merge."
+          # Security job removed from this workflow: only R gates. The
+          # bootstrap-PR exception below is review-only (S is pinned to a
+          # passing constant above).
+          if [ "$R_AGENT" = "false" ]; then
+            if [ "$R_SOURCE" = "needs-fallback-bootstrap-pr" ]; then
+              # Bootstrap-PR exception: claude-code-action's workflow-validation
+              # guard skipped the agent because this PR touches
+              # .github/workflows/*. The synthesized Approve passes cleanly
+              # through the rank/case logic below; the human gate decides merge.
+              echo "::notice::bootstrap-PR fallback: review agent skipped due to anthropics/claude-code-action@v1's workflow-validation guard (PR modifies .github/workflows/*). Accepting synthesized Approve; human gate decides merge."
             else
               {
-                echo "::error::review+security gate: AI agent was skipped (non-bootstrap)"
+                echo "::error::review gate: AI agent was skipped (non-bootstrap)"
                 echo "  review.agent_ran=$R_AGENT verdict=$R source=$R_SOURCE"
-                echo "  security.agent_ran=$S_AGENT verdict=$S source=$S_SOURCE"
                 echo
                 echo "  anthropics/claude-code-action@558b1d6cab4085c7753fe402c10bef0fbb92ac7a # v1 refused to run, but the"
                 echo "  skip is NOT the documented bootstrap-PR case (verdict_source"
