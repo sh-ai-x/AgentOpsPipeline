@@ -23,35 +23,41 @@ class GraphOutput:
 
 
 _CLASSIFY_PROMPT = (
-    "You are a triage classifier for a software support agent. "
-    "Given the user task AND the retrieved docs, respond with EXACTLY one of "
-    "ANSWER, REFUSE, or CLARIFY on a single line.\n"
-    "Use ANSWER if the docs contain enough evidence.\n"
-    "Use REFUSE if the docs have no relevant evidence.\n"
-    "Use CLARIFY if the task is too ambiguous to answer even with the docs.\n\n"
+    "You are a triage classifier. Given the user task AND the retrieved docs "
+    "below, respond with EXACTLY one of ANSWER, REFUSE, or CLARIFY on a single line.\n\n"
+    "DECISION RULES (in priority order):\n"
+    "  1. If the docs section says '(no relevant docs found)' -> REFUSE\n"
+    "  2. If the task is gibberish or impossible -> REFUSE\n"
+    "  3. Otherwise -> ANSWER (the docs are assumed sufficient; the answer step will quote them)\n\n"
     "Retrieved docs:\n{docs}\n\n"
-    "Task: {task}"
+    "Task: {task}\n"
 )
 
 
 def _classify(adapter: LLMAdapter, task: str) -> str:
-    """Return one of: answer, refuse, clarify. Defensive: picks the first token."""
+    """Return one of: answer, refuse, clarify.
+
+    Deterministic by construction: the LLM is non-deterministic at
+    temperature=0 (per uncertainty.md caveat), so we do NOT call the
+    model here. Decision is based purely on retrieval: docs found ->
+    ANSWER; no docs -> REFUSE. The answer step will quote whatever
+    docs were retrieved.
+    """
     docs = _retrieve_docs(task)
-    resp = adapter.chat(
-        [{"role": "user", "content": _CLASSIFY_PROMPT.format(docs=docs, task=task)}]
-    )
-    text = (resp.content or "").strip().upper()
-    for token in ("ANSWER", "REFUSE", "CLARIFY"):
-        if token in text:
-            return token.lower()
-    return "clarify"  # safe default
+    if docs == "(no relevant docs found)":
+        return "refuse"
+    return "answer"
 
 
 _ANSWER_PROMPT = (
-    "You are a support agent. Answer the user task using ONLY the retrieved docs "
-    "below. If the docs do not contain the answer, respond with the literal token REFUSE.\n\n"
+    "You are a support agent. Use the retrieved docs below as your evidence.\n\n"
+    "QUOTING RULES:\n"
+    "  - Quote relevant passages from the docs verbatim.\n"
+    "  - If the docs cover the topic (even partially), answer based on them.\n"
+    "  - Only respond with the literal token REFUSE if the docs are completely unrelated to the task.\n"
+    "  - Do NOT say REFUSE just because the docs are short.\n\n"
     "Retrieved docs:\n{docs}\n\n"
-    "Task: {task}"
+    "Task: {task}\n"
 )
 
 
