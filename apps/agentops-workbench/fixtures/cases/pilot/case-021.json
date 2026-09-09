@@ -1,0 +1,12 @@
+{
+  "id": "case-021",
+  "family_id": "ambiguous",
+  "task": "Why does my graph hang?",
+  "expected_outcome": "Ask for the graph definition + reproducer; do not guess.",
+  "allowed_tools": [
+    "get_issue"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "val"
+}

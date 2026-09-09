@@ -1,0 +1,12 @@
+{
+  "id": "case-022",
+  "family_id": "missing_evidence",
+  "task": "What is the runtime cost of Streamable HTTP transport in MCP?",
+  "expected_outcome": "Insufficient evidence in corpus; supported refusal.",
+  "allowed_tools": [
+    "search_docs"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "val"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "case-009",
+  "family_id": "ambiguous",
+  "task": "How do I improve groundedness?",
+  "expected_outcome": "Ask what evidence was retrieved and what the user already tried; do not guess.",
+  "allowed_tools": [
+    "get_issue"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "case-017",
+  "family_id": "tool_failure",
+  "task": "Call read_document on a non-existent doc id.",
+  "expected_outcome": "read_document returns an error envelope; graph surfaces it; no ticket draft.",
+  "allowed_tools": [
+    "read_document"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

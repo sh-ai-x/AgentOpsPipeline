@@ -1,0 +1,12 @@
+{
+  "id": "case-030",
+  "family_id": "tool_failure",
+  "task": "Search for 'foo bar baz' across the corpus.",
+  "expected_outcome": "search_docs returns empty list; graph surfaces the empty result; no ticket draft.",
+  "allowed_tools": [
+    "search_docs"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "held_out"
+}

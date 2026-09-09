@@ -1,0 +1,15 @@
+{
+  "id": "case-005",
+  "family_id": "multi_doc",
+  "task": "What is the difference between the LLMAdapter and a raw chat-model call?",
+  "expected_outcome": "The adapter normalises usage (provider, model, tokens, cost_usd) and is the only place that names a provider.",
+  "allowed_tools": [
+    "search_docs",
+    "read_document"
+  ],
+  "source_refs": [
+    "doc://llm-adapter"
+  ],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

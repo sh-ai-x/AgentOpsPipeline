@@ -1,0 +1,15 @@
+{
+  "id": "case-014",
+  "family_id": "stale_doc",
+  "task": "Which LangGraph version introduced the typed reducer API?",
+  "expected_outcome": "Cite the version noted in the on-disk docs; flag staleness.",
+  "allowed_tools": [
+    "search_docs",
+    "read_document"
+  ],
+  "source_refs": [
+    "doc://langgraph-typed-reducer"
+  ],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

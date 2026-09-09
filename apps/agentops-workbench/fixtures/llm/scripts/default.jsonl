@@ -1,0 +1,4 @@
+{"role": "assistant", "content": "I searched the corpus and found no direct match. Could you provide the project name or specific error message?"}
+{"role": "assistant", "content": "Based on the docs, you should use PostgresCheckpointer with a connection string. Runs resume after worker restart."}
+{"role": "assistant", "content": "Postgres for shared/multi-instance; Sqlite for single-node dev. Trade-offs: Postgres adds migration complexity; Sqlite is zero-config."}
+{"role": "assistant", "content": "Insufficient evidence in the corpus to answer confidently. Please provide more context or check upstream docs."}

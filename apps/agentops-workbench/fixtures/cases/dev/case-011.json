@@ -1,0 +1,12 @@
+{
+  "id": "case-011",
+  "family_id": "missing_evidence",
+  "task": "How many tokens per minute does MiniMax M3 produce?",
+  "expected_outcome": "Insufficient evidence in corpus; supported refusal.",
+  "allowed_tools": [
+    "search_docs"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

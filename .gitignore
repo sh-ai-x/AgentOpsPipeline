@@ -71,3 +71,4 @@ target/
 .dev-kit/logs/
 logs/
 # <<< dev-kit <<<
+.worktrees/

@@ -1,0 +1,12 @@
+{
+  "id": "case-018",
+  "family_id": "tool_failure",
+  "task": "Time out the MCP server mid-call.",
+  "expected_outcome": "MCPError kind=timeout surfaces in the run; no ticket draft.",
+  "allowed_tools": [
+    "search_docs"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

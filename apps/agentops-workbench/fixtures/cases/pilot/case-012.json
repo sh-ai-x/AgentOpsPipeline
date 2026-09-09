@@ -1,0 +1,12 @@
+{
+  "id": "case-012",
+  "family_id": "missing_evidence",
+  "task": "What is the cold-start latency for the planner/executor variant?",
+  "expected_outcome": "Insufficient evidence in corpus; supported refusal.",
+  "allowed_tools": [
+    "search_docs"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}
