@@ -1,0 +1,15 @@
+{
+  "id": "case-025",
+  "family_id": "straightforward",
+  "task": "How do I configure LangGraph checkpointing with PostgreSQL?",
+  "expected_outcome": "Use a PostgresCheckpointer with a connection string; runs resume after restart.",
+  "allowed_tools": [
+    "search_docs",
+    "read_document"
+  ],
+  "source_refs": [
+    "doc://langgraph-persistence"
+  ],
+  "reviewer": "sh-ai-x",
+  "split": "held_out"
+}

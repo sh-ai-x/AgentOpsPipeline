@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BenchmarkCase",
+  "type": "object",
+  "required": ["id", "family_id", "task", "expected_outcome", "allowed_tools", "source_refs", "reviewer", "split"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^case-[0-9]{3}$" },
+    "family_id": {
+      "type": "string",
+      "enum": ["straightforward", "multi_doc", "ambiguous", "missing_evidence", "stale_doc", "tool_failure"]
+    },
+    "task": { "type": "string", "minLength": 10 },
+    "expected_outcome": { "type": "string", "minLength": 1 },
+    "allowed_tools": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["search_docs", "read_document", "get_issue", "create_ticket_draft", "publish_ticket"]
+      },
+      "minItems": 1
+    },
+    "source_refs": { "type": "array", "items": { "type": "string" } },
+    "reviewer": { "type": "string", "minLength": 1 },
+    "split": { "type": "string", "enum": ["dev", "val", "held_out"] }
+  },
+  "additionalProperties": false
+}

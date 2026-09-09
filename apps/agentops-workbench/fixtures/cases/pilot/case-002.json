@@ -1,0 +1,14 @@
+{
+  "id": "case-002",
+  "family_id": "straightforward",
+  "task": "What transport does MCP use for local servers?",
+  "expected_outcome": "stdio (JSON-RPC over stdin/stdout).",
+  "allowed_tools": [
+    "search_docs"
+  ],
+  "source_refs": [
+    "doc://mcp-stdio"
+  ],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

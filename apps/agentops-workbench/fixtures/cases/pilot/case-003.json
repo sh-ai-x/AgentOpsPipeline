@@ -1,0 +1,13 @@
+{
+  "id": "case-003",
+  "family_id": "straightforward",
+  "task": "How do I issue a dev JWT for the workbench API?",
+  "expected_outcome": "issue_token(principal_id) returns a HS256-signed JWT; env JWT_SECRET holds the key.",
+  "allowed_tools": [
+    "search_docs",
+    "read_document"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

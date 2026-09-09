@@ -1,0 +1,12 @@
+{
+  "id": "case-008",
+  "family_id": "ambiguous",
+  "task": "The agent timed out. What now?",
+  "expected_outcome": "Ask which step + the budget; do not guess.",
+  "allowed_tools": [
+    "get_issue"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

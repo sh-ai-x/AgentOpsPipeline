@@ -1,0 +1,27 @@
+name: workbench-ci
+on:
+  push:
+    branches: [main]
+    paths:
+    - 'apps/agentops-workbench/**'
+    - '.github/workflows/workbench-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+    - 'apps/agentops-workbench/**'
+  workflow_dispatch:
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/agentops-workbench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: uv run ruff check .
+      - run: uv run pytest -q

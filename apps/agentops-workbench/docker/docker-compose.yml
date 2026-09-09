@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agentops
+      POSTGRES_USER: agentops
+      POSTGRES_PASSWORD: replace_me_dev_only
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentops"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      AGENTOPS_PROVIDER: local-fake
+      AGENTOPS_DATABASE_URL: postgresql://agentops:replace_me_dev_only@postgres:5432/agentops
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["uv", "run", "python", "-m", "agentops_workbench.worker"]
+    environment:
+      AGENTOPS_PROVIDER: local-fake
+      AGENTOPS_DATABASE_URL: postgresql://agentops:replace_me_dev_only@postgres:5432/agentops
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  streamlit:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["uv", "run", "streamlit", "run", "streamlit_app/app.py", "--server.port=8501"]
+    environment:
+      AGENTOPS_API_BASE: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+
+  mcp-document:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["uv", "run", "python", "-m", "agentops_workbench.mcp.mcp_servers.document.server"]
+    volumes:
+      - ../fixtures/docs:/docs:ro
+    read_only: true
+
+volumes:
+  pgdata:

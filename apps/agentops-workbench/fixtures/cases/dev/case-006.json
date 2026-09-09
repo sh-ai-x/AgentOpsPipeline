@@ -1,0 +1,13 @@
+{
+  "id": "case-006",
+  "family_id": "multi_doc",
+  "task": "Compare action approval replay vs compensating actions for the mock ticket ledger.",
+  "expected_outcome": "The ledger is idempotent on action_key and rejects mutated args (replay-safe).",
+  "allowed_tools": [
+    "search_docs",
+    "read_document"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "case-015",
+  "family_id": "stale_doc",
+  "task": "Does pyproject.toml use hatchling or setuptools?",
+  "expected_outcome": "Cite the build-backend entry; flag if v0.1 example shows poetry.",
+  "allowed_tools": [
+    "search_docs",
+    "read_document"
+  ],
+  "source_refs": [],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

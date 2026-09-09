@@ -1,0 +1,15 @@
+{
+  "id": "case-013",
+  "family_id": "stale_doc",
+  "task": "How do I use ChatOpenAI with a custom base_url?",
+  "expected_outcome": "Cite the v0.2 docs entry; flag that v0.1 example is stale.",
+  "allowed_tools": [
+    "search_docs",
+    "read_document"
+  ],
+  "source_refs": [
+    "doc://langchain-chatopenai-baseurl"
+  ],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

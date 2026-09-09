@@ -1,0 +1,16 @@
+{
+  "id": "case-020",
+  "family_id": "multi_doc",
+  "task": "Compare PostgresCheckpointer vs SqliteCheckpointer for a single-node dev workflow.",
+  "expected_outcome": "Postgres for shared/multi-instance; Sqlite for single-node dev. Trade-offs stated.",
+  "allowed_tools": [
+    "search_docs",
+    "read_document"
+  ],
+  "source_refs": [
+    "doc://langgraph-persistence",
+    "doc://langgraph-checkpointer-comparison"
+  ],
+  "reviewer": "sh-ai-x",
+  "split": "val"
+}
