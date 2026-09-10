@@ -1,0 +1,24 @@
+{
+  "gates": {
+    "maintenance": {
+      "enabled": true,
+      "var": "GATES_MAINTENANCE_ENABLED",
+      "workflow": "maintenance.yml"
+    },
+    "review": {
+      "enabled": true,
+      "var": "GATES_REVIEW_ENABLED",
+      "workflow": "review.yml"
+    },
+    "security": {
+      "enabled": false,
+      "var": "GATES_SECURITY_ENABLED",
+      "workflow": "security.yml"
+    }
+  },
+  "installed_at": "2026-09-10T02:32:07Z",
+  "installed_by": "dev-kit:gate-select",
+  "installed_dev_kit_version": "0.3.350",
+  "provider_env_key": "CI_REVIEW_PROVIDER",
+  "schema_version": "1.0.0"
+}
