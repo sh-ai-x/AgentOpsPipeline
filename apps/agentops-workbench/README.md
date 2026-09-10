@@ -115,4 +115,3 @@ uv run ruff check .  # clean
 ## License
 
 MIT. See `LICENSE`.
-
