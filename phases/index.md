@@ -45,6 +45,21 @@ The tracked anchors are:
 - [`../apps/agentops-workbench/`](../apps/agentops-workbench/) — the implementation.
 - [`../apps/agentops-workbench/docs/EVIDENCE_CARD.md`](../apps/agentops-workbench/docs/EVIDENCE_CARD.md) — what was built and measured.
 
+## Build record
+
+The `/dev-kit:build` runner was never executed in this monorepo (the workbench
+was built standalone and imported via PR #8), so no per-step
+`step<N>-output.json` was ever emitted. [`build-report.md`](build-report.md)
+reconstructs the build from the shipped artefacts plus a re-run of the
+deterministic gates on 2026-09-11, and each phase carries a reconstructed
+`phases/<NN-slug>/step<N>-output.json`.
+
+Gates re-run 2026-09-11: `uv run pytest -q` → 153 passed, 1 failed (154
+collected); `uv run ruff check .` → clean. The single failure
+(`test_has_insecure_jwt_secret_flags_default_and_short`) is a test-isolation
+defect — `Settings()` reads a local `.env` with a strong `AGENTOPS_JWT_SECRET` —
+and passes in clean CI. See [`build-report.md`](build-report.md).
+
 ## Pins (project-wide)
 
 - Python `>=3.10`
@@ -83,7 +98,7 @@ describe how the agent runs, not the monorepo layout). Project-level index:
 ## Status
 
 - **Phases 0–6:** implemented in `apps/agentops-workbench/`, merged via PR #8.
-- **Local gates:** `uv run pytest` green, `uv run ruff check` clean (the app README tags 137 tests; `docs/EVIDENCE_CARD.md` reports 144 after the post-import fixes).
+- **Local gates (re-run 2026-09-11):** `uv run pytest` 153/154 (1 env-only failure), `uv run ruff check` clean — full breakdown in [`build-report.md`](build-report.md).
 - **Live experiments:** held-out (24 runs) and 3-prompt comparison (18 runs) run
   against `MiniMax-M3` — 42 runs, ~$0.03 total. `v3_minimal` published as the
   unsuccessful change per the proposal.

@@ -7,6 +7,7 @@
 - **Estimated:** 1.0 week (original plan value, not measured effort)
 - **Exit criterion:** A reviewer can reproduce an offline failure and inspect the basis for the shipping decision
 - **Status:** shipped — merged into `apps/agentops-workbench/` via PR #8
+- **Build output:** [`step7-output.json`](step7-output.json) — reconstructed step record (see [`../build-report.md`](../build-report.md))
 
 ## Deliverables (planned)
 

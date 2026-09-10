@@ -7,6 +7,7 @@
 - **Estimated:** 1.0 week (original plan value, not measured effort)
 - **Exit criterion:** Selection follows measured utility; a simpler workflow may win
 - **Status:** shipped — merged into `apps/agentops-workbench/` via PR #8
+- **Build output:** [`step5-output.json`](step5-output.json) — reconstructed step record (see [`../build-report.md`](../build-report.md))
 
 ## Deliverables (planned)
 

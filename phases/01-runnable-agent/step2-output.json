@@ -1,0 +1,38 @@
+{
+  "step": 2,
+  "phase": 1,
+  "slug": "01-runnable-agent",
+  "title": "Runnable agent + FastAPI + local-fake adapter",
+  "exit_code": 0,
+  "status": "completed",
+  "acceptance_criterion": "Normal task completes; missing evidence produces a supported refusal; failed tool is visible",
+  "acceptance_met": true,
+  "duration_seconds": null,
+  "timestamp": "2026-09-11T00:00:00Z",
+  "stdout": "Phase 1 shipped. LLMAdapter ABC with deterministic local-fake (scripted from fixtures/llm/) and\nminimax adapters behind a factory. Fixed LangGraph workflow: retrieve -> classify -> (answer |\nrefuse | clarify). FastAPI surface with HS256 JWT; async worker via concurrent.futures. Mock\nticket ledger is idempotent on action_key. Streamlit skeleton present.\n\nNote: the 3 review criticals called out on the import PR (JWT secret startup guard, alg\nallowlist, run-usage persistence) and finding F01 (approved_by from the JWT, not the body)\nwere fixed in PR #8, after the original standalone-repo build.\n",
+  "stderr": "",
+  "evidence": [
+    "src/agentops_workbench/llm/{adapter,factory,local_fake,minimax,openai_compat}.py present",
+    "src/agentops_workbench/graph/{fixed,state}.py present (retrieve -> classify -> answer|refuse|clarify)",
+    "src/agentops_workbench/api/server.py exposes POST /v1/runs, GET /v1/runs/{id}, POST /v1/runs/{id}/cancel, POST /v1/actions",
+    "tests/test_api_runs.py = 15 tests, tests/llm/test_factory.py = 4, tests/llm/test_local_fake_adapter.py = 3, tests/worker/test_runner.py = 2 \u2014 all pass",
+    "src/agentops_workbench/mocks/tickets.py \u2014 idempotent mock ledger (dedupes on action_key, rejects mutated args)",
+    "streamlit_app/app.py present",
+    "PR #8 added the JWT secret startup guard + HS-family algorithm allowlist (tests/test_auth_hardening.py)"
+  ],
+  "artifacts": [
+    "apps/agentops-workbench/src/agentops_workbench/llm/",
+    "apps/agentops-workbench/src/agentops_workbench/graph/fixed.py",
+    "apps/agentops-workbench/src/agentops_workbench/graph/state.py",
+    "apps/agentops-workbench/src/agentops_workbench/api/server.py",
+    "apps/agentops-workbench/src/agentops_workbench/mocks/tickets.py",
+    "apps/agentops-workbench/src/agentops_workbench/worker/runner.py",
+    "apps/agentops-workbench/streamlit_app/app.py"
+  ],
+  "synthesized": {
+    "note": "The /dev-kit:build runner was never executed in this monorepo. The AgentOps Workbench was built in a standalone repo and imported via PR #8, so no per-step sub-agent subprocess output was ever captured. This file is reconstructed from the shipped artifacts under apps/agentops-workbench/ plus a re-run of the deterministic gates on 2026-09-11. exit_code / acceptance_met are judgements against the shipped tree, not a recorded process exit.",
+    "generated_at": "2026-09-11",
+    "workbench_code_sha": "91194d8",
+    "held_out_manifest_code_sha": "a5b489b"
+  }
+}

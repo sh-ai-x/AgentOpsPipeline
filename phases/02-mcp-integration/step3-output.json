@@ -1,0 +1,30 @@
+{
+  "step": 3,
+  "phase": 2,
+  "slug": "02-mcp-integration",
+  "title": "MCP document server + filesystem pin + recovery",
+  "exit_code": 0,
+  "status": "completed",
+  "acceptance_criterion": "Tools work through the protocol and a repeated action does not duplicate the mock effect",
+  "acceptance_met": true,
+  "duration_seconds": null,
+  "timestamp": "2026-09-11T00:00:00Z",
+  "stdout": "Phase 2 shipped. Custom document MCP server over stdio (protocol revision 2026-07-28 pinned in\nthe initialize handshake) exposing search_docs and read_document. Pinned filesystem MCP server\nscoped to fixtures/docs/ only, with a scope_guard that refuses paths outside that root.\nDuplicate-delivery / recovery behaviour is enforced by the idempotent ledger (dedupe on\naction_key).\n\nFollow-up (tracked, from the /dev-kit:security pass on PR #8): the single_agent / planner_executor\nTOOL branches are currently tool-less; only the fixed graph wires the MCP tools end to end.\n",
+  "stderr": "",
+  "evidence": [
+    "src/agentops_workbench/mcp/mcp_servers/document/server.py \u2014 stdio JSON-RPC; initialize / tools/list / tools/call; search_docs + read_document",
+    "src/agentops_workbench/mcp/mcp_servers/filesystem/scope_guard.py \u2014 path scope enforcement for the pinned @modelcontextprotocol/server-filesystem",
+    "tests/mcp/test_document_server.py = 22 tests, all pass (includes protocol handshake + unknown-tool -32601 + out-of-scope path rejection)",
+    "mock ticket ledger idempotency is covered by tests/test_api_runs.py + tests/worker/test_runner.py"
+  ],
+  "artifacts": [
+    "apps/agentops-workbench/src/agentops_workbench/mcp/mcp_servers/document/server.py",
+    "apps/agentops-workbench/src/agentops_workbench/mcp/mcp_servers/filesystem/scope_guard.py"
+  ],
+  "synthesized": {
+    "note": "The /dev-kit:build runner was never executed in this monorepo. The AgentOps Workbench was built in a standalone repo and imported via PR #8, so no per-step sub-agent subprocess output was ever captured. This file is reconstructed from the shipped artifacts under apps/agentops-workbench/ plus a re-run of the deterministic gates on 2026-09-11. exit_code / acceptance_met are judgements against the shipped tree, not a recorded process exit.",
+    "generated_at": "2026-09-11",
+    "workbench_code_sha": "91194d8",
+    "held_out_manifest_code_sha": "a5b489b"
+  }
+}

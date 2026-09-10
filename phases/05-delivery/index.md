@@ -7,6 +7,7 @@
 - **Estimated:** 1.5 weeks (original plan value, not measured effort)
 - **Exit criterion:** A clean setup works; seeded regression fails CI; traces do not expose synthetic secrets
 - **Status:** shipped — merged into `apps/agentops-workbench/` via PR #8
+- **Build output:** [`step6-output.json`](step6-output.json) — reconstructed step record (see [`../build-report.md`](../build-report.md))
 
 ## Deliverables (planned)
 

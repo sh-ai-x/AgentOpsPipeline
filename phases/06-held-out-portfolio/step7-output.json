@@ -1,0 +1,36 @@
+{
+  "step": 7,
+  "phase": 6,
+  "slug": "06-held-out-portfolio",
+  "title": "Held-out evaluation + evidence card + demo",
+  "exit_code": 0,
+  "status": "completed",
+  "acceptance_criterion": "A reviewer can reproduce an offline failure and inspect the basis for the shipping decision",
+  "acceptance_met": true,
+  "duration_seconds": null,
+  "timestamp": "2026-09-11T00:00:00Z",
+  "stdout": "Phase 6 shipped. 24-run held-out experiment executed live on MiniMax-M3 for $0.0124 under a $5\nSpendCeiling; raw per-run outcomes, a full dependency/code-SHA manifest, and the failed-case +\nuncertainty writeups are committed. The evidence card summarises what was built and measured.\n\nHonest gaps: (1) task_success is 0/24 under the conservative substring scorer, so the 'shipping\ndecision' rests on token-efficiency (fixed << single_agent) and the retrieval_recall signal\n(1.0 on 5/6 families), not on an end-to-end success rate. (2) The planned git tag\nexperiment-v1-frozen was never cut. (3) docs/demo.md is a 5-minute script, not a recording.\n",
+  "stderr": "",
+  "evidence": [
+    "experiments/held-out-v1/outcomes.jsonl = 24 lines (6 held-out cases x 2 topologies x 2 trials)",
+    "experiments/held-out-v1/manifest.json: provider=minimax, model=MiniMax-M3, prompt_version=v1_baseline, code_sha=a5b489b, budget max_usd=5.0, selected_topologies=[fixed, single_agent]",
+    "EVIDENCE_CARD totals: 9,074 tokens (5,782 prompt + 3,292 completion), $0.0124, 153.7s, held_out_sha256 d3bef8c3...d8d0a5",
+    "experiments/held-out-v1/{failed_cases.md,uncertainty.md} \u2014 24/24 failed under the substring scorer; per-topology 0/12 each; caveats stated",
+    "tests/test_held_out.py = 8 tests, all pass",
+    "docs/EVIDENCE_CARD.md + docs/demo.md present"
+  ],
+  "artifacts": [
+    "apps/agentops-workbench/experiments/held-out-v1/outcomes.jsonl",
+    "apps/agentops-workbench/experiments/held-out-v1/manifest.json",
+    "apps/agentops-workbench/experiments/held-out-v1/failed_cases.md",
+    "apps/agentops-workbench/experiments/held-out-v1/uncertainty.md",
+    "apps/agentops-workbench/docs/EVIDENCE_CARD.md",
+    "apps/agentops-workbench/docs/demo.md"
+  ],
+  "synthesized": {
+    "note": "The /dev-kit:build runner was never executed in this monorepo. The AgentOps Workbench was built in a standalone repo and imported via PR #8, so no per-step sub-agent subprocess output was ever captured. This file is reconstructed from the shipped artifacts under apps/agentops-workbench/ plus a re-run of the deterministic gates on 2026-09-11. exit_code / acceptance_met are judgements against the shipped tree, not a recorded process exit.",
+    "generated_at": "2026-09-11",
+    "workbench_code_sha": "91194d8",
+    "held_out_manifest_code_sha": "a5b489b"
+  }
+}

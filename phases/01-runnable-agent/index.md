@@ -7,6 +7,7 @@
 - **Estimated:** 1.5 weeks (original plan value, not measured effort)
 - **Exit criterion:** Normal task completes; missing evidence produces a supported refusal; failed tool is visible
 - **Status:** shipped — merged into `apps/agentops-workbench/` via PR #8
+- **Build output:** [`step2-output.json`](step2-output.json) — reconstructed step record (see [`../build-report.md`](../build-report.md))
 
 ## Deliverables (planned)
 

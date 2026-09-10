@@ -1,0 +1,32 @@
+{
+  "step": 5,
+  "phase": 4,
+  "slug": "04-topology-experiments",
+  "title": "Topology variants + planner/executor",
+  "exit_code": 0,
+  "status": "completed",
+  "acceptance_criterion": "Selection follows measured utility; a simpler workflow may win",
+  "acceptance_met": true,
+  "duration_seconds": null,
+  "timestamp": "2026-09-11T00:00:00Z",
+  "stdout": "Phase 4 shipped. Single-agent (ReAct-style) and bounded planner/executor variants on the same\ntool contracts, selectable through a registry. ADR-0006 records the shipping choice: the fixed\ngraph is the default because the held-out comparison showed the simpler topology wins \u2014 single_agent\nspent 2-10x the completion tokens of fixed for no measurable quality gain.\n\nOnly fixed and single_agent were carried into the held-out run (see held-out-v1/manifest.json\nselected_topologies); planner_executor ships but was not part of the frozen experiment.\n",
+  "stderr": "",
+  "evidence": [
+    "src/agentops_workbench/graph/{single_agent,planner_executor,topology}.py \u2014 three topologies behind one registry",
+    "tests/graph/test_topology.py = 11 tests, all pass",
+    "docs/adr/0006-topology.md \u2014 fixed graph shipped as the default",
+    "experiments/held-out-v1/uncertainty.md: fixed 0/12, single_agent 0/12; single_agent burned 2-10x completion tokens for no measured gain"
+  ],
+  "artifacts": [
+    "apps/agentops-workbench/src/agentops_workbench/graph/single_agent.py",
+    "apps/agentops-workbench/src/agentops_workbench/graph/planner_executor.py",
+    "apps/agentops-workbench/src/agentops_workbench/graph/topology.py",
+    "apps/agentops-workbench/docs/adr/0006-topology.md"
+  ],
+  "synthesized": {
+    "note": "The /dev-kit:build runner was never executed in this monorepo. The AgentOps Workbench was built in a standalone repo and imported via PR #8, so no per-step sub-agent subprocess output was ever captured. This file is reconstructed from the shipped artifacts under apps/agentops-workbench/ plus a re-run of the deterministic gates on 2026-09-11. exit_code / acceptance_met are judgements against the shipped tree, not a recorded process exit.",
+    "generated_at": "2026-09-11",
+    "workbench_code_sha": "91194d8",
+    "held_out_manifest_code_sha": "a5b489b"
+  }
+}

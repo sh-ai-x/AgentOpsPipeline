@@ -7,6 +7,7 @@
 - **Estimated:** 1.0 week (original plan value, not measured effort)
 - **Exit criterion:** Tools work through the protocol and a repeated action does not duplicate the mock effect
 - **Status:** shipped — merged into `apps/agentops-workbench/` via PR #8
+- **Build output:** [`step3-output.json`](step3-output.json) — reconstructed step record (see [`../build-report.md`](../build-report.md))
 
 ## Deliverables (planned)
 

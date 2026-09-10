@@ -1,0 +1,40 @@
+{
+  "step": 1,
+  "phase": 0,
+  "slug": "00-bootstrap",
+  "title": "Repo bootstrap, ADRs, scope fixtures, pilot dataset",
+  "exit_code": 0,
+  "status": "completed",
+  "acceptance_criterion": "Another developer can score the pilot without guessing what \"good\" means",
+  "acceptance_met": true,
+  "duration_seconds": null,
+  "timestamp": "2026-09-11T00:00:00Z",
+  "stdout": "Phase 0 shipped. uv scaffold with pinned deps + lockfile; empty package + tests dir replaced by\nthe full tree in later phases. Scope doc, JSON-schema fixture contract, 30 pilot case files, 8\nattributed synthetic docs, and 4 of the 5 planned ADRs (LangGraph / MCP / provider / dataset).\nThe 5th planned ADR (runtime safety / cost cap) was deliberately merged into ADR-0003; its\nnumber is preserved as a tombstone.\n",
+  "stderr": "",
+  "evidence": [
+    "apps/agentops-workbench/pyproject.toml pins Python >=3.10, langgraph==1.2.11, langchain-core>=0.3; uv.lock present",
+    "docs/scope.md present (in/out scope, permissions, exclusions)",
+    "fixtures/cases/schema.json present; tests/test_fixture_schema.py = 33 tests, all pass",
+    "fixtures/cases/pilot/ holds 30 case files; fixtures/docs/ holds 8 synthetic docs (doc-001..008)",
+    "docs/adr/0001-langgraph.md, 0002-mcp-boundaries.md, 0003-provider-abstraction.md, 0004-dataset-separation.md present; tests/test_adrs_present.py = 8 tests, all pass",
+    "ADR-0005 intentionally absent (folded into ADR-0003); tombstone added at docs/adr/0005-runtime-safety.md in this PR"
+  ],
+  "artifacts": [
+    "apps/agentops-workbench/pyproject.toml",
+    "apps/agentops-workbench/uv.lock",
+    "apps/agentops-workbench/docs/scope.md",
+    "apps/agentops-workbench/fixtures/cases/schema.json",
+    "apps/agentops-workbench/fixtures/cases/pilot/",
+    "apps/agentops-workbench/fixtures/docs/",
+    "apps/agentops-workbench/docs/adr/0001-langgraph.md",
+    "apps/agentops-workbench/docs/adr/0002-mcp-boundaries.md",
+    "apps/agentops-workbench/docs/adr/0003-provider-abstraction.md",
+    "apps/agentops-workbench/docs/adr/0004-dataset-separation.md"
+  ],
+  "synthesized": {
+    "note": "The /dev-kit:build runner was never executed in this monorepo. The AgentOps Workbench was built in a standalone repo and imported via PR #8, so no per-step sub-agent subprocess output was ever captured. This file is reconstructed from the shipped artifacts under apps/agentops-workbench/ plus a re-run of the deterministic gates on 2026-09-11. exit_code / acceptance_met are judgements against the shipped tree, not a recorded process exit.",
+    "generated_at": "2026-09-11",
+    "workbench_code_sha": "91194d8",
+    "held_out_manifest_code_sha": "a5b489b"
+  }
+}

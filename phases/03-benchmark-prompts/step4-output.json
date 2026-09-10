@@ -1,0 +1,37 @@
+{
+  "step": 4,
+  "phase": 3,
+  "slug": "03-benchmark-prompts",
+  "title": "30-case dataset + scorers + prompt experiments",
+  "exit_code": 0,
+  "status": "completed",
+  "acceptance_criterion": "Every promoted case is traceable and held-out data has not influenced tuning",
+  "acceptance_met": true,
+  "duration_seconds": null,
+  "timestamp": "2026-09-11T00:00:00Z",
+  "stdout": "Phase 3 shipped. 30 cases across 6 families, frozen 18/6/6 dev/val/held-out split; the held-out\nset is content-hashed into HELD_OUT_SHA256.txt and is not read by any tuning path. Node and task\nscorers with 16 unit tests. 3-prompt comparison ran live (18 runs) under one matched budget;\nv1_baseline + v2_structured advance to the topology comparison, v3_minimal is the published\nunsuccessful change.\n\nMeasured: all three prompt versions score 0/6 task_success. Per EVIDENCE_CARD this is the\nconservative substring-match scorer (semantically-correct answers scored false), documented as a\nlimitation rather than a regression.\n",
+  "stderr": "",
+  "evidence": [
+    "fixtures/cases/: dev=18, val=6, held_out=6 (= 30) case files; fixtures/cases/HELD_OUT_SHA256.txt = d3bef8c3...d8d0a5",
+    "src/agentops_workbench/benchmark/{scorers,load}.py; tests/benchmark/test_scorers.py = 16 tests, all pass",
+    "experiments/prompts-v1/{report.md,outcomes.jsonl} \u2014 18 live runs (6 val cases x 3 prompt versions) on MiniMax-M3",
+    "report.md: v1_baseline / v2_structured selected; v3_minimal published as the unsuccessful change (no system prompt)",
+    "tests/experiments/test_prompts.py = 3 tests, all pass"
+  ],
+  "artifacts": [
+    "apps/agentops-workbench/fixtures/cases/dev/",
+    "apps/agentops-workbench/fixtures/cases/val/",
+    "apps/agentops-workbench/fixtures/cases/held_out/",
+    "apps/agentops-workbench/fixtures/cases/HELD_OUT_SHA256.txt",
+    "apps/agentops-workbench/src/agentops_workbench/benchmark/scorers.py",
+    "apps/agentops-workbench/src/agentops_workbench/benchmark/load.py",
+    "apps/agentops-workbench/experiments/prompts-v1/report.md",
+    "apps/agentops-workbench/experiments/prompts-v1/outcomes.jsonl"
+  ],
+  "synthesized": {
+    "note": "The /dev-kit:build runner was never executed in this monorepo. The AgentOps Workbench was built in a standalone repo and imported via PR #8, so no per-step sub-agent subprocess output was ever captured. This file is reconstructed from the shipped artifacts under apps/agentops-workbench/ plus a re-run of the deterministic gates on 2026-09-11. exit_code / acceptance_met are judgements against the shipped tree, not a recorded process exit.",
+    "generated_at": "2026-09-11",
+    "workbench_code_sha": "91194d8",
+    "held_out_manifest_code_sha": "a5b489b"
+  }
+}

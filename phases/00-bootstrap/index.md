@@ -7,6 +7,7 @@
 - **Estimated:** 0.5 week (original plan value, not measured effort)
 - **Exit criterion:** Another developer can score the pilot without guessing what "good" means
 - **Status:** shipped — merged into `apps/agentops-workbench/` via PR #8
+- **Build output:** [`step1-output.json`](step1-output.json) — reconstructed step record (see [`../build-report.md`](../build-report.md))
 
 ## Deliverables (planned)
 

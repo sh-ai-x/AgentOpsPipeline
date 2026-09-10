@@ -7,6 +7,7 @@
 - **Estimated:** 1.0 week (original plan value, not measured effort)
 - **Exit criterion:** Every promoted case is traceable and held-out data has not influenced tuning
 - **Status:** shipped — merged into `apps/agentops-workbench/` via PR #8
+- **Build output:** [`step4-output.json`](step4-output.json) — reconstructed step record (see [`../build-report.md`](../build-report.md))
 
 ## Deliverables (planned)
 
