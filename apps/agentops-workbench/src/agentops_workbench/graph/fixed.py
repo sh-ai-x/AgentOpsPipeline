@@ -61,16 +61,44 @@ _ANSWER_PROMPT = (
 )
 
 
+_STOPWORDS = frozenset({
+    "the", "and", "with", "from", "for", "into", "this", "that",
+    "are", "can", "you", "your", "how", "what", "when", "use",
+    "have", "has", "had", "will", "would", "should", "could",
+})
+
+
 def _retrieve_docs(task: str, docs_dir: str = "fixtures/docs") -> str:
-    """Lexical retrieval over the fixture corpus. Top-3 docs that match task tokens."""
+    """Lexical retrieval over the fixture corpus.
+
+    Top-3 docs that match task tokens. Tokenization strips punctuation
+    (so "PostgreSQL?" -> "postgresql"); common English stopwords are
+    filtered; long tokens (>=7 chars) get a 6-char prefix fallback so
+    stemmed variants still match ("postgresql" -> "postgres",
+    "checkpointing" -> "checkpointers").
+    """
+    import re
     from pathlib import Path
-    tokens = [t.lower() for t in task.split() if len(t) >= 3][:10]
+
+    tokens = [
+        t for t in re.findall(r"[a-z0-9]+", task.lower())
+        if len(t) >= 3 and t not in _STOPWORDS
+    ][:10]
     if not tokens:
         return "(no relevant docs found)"
+
     matches: list[tuple[str, int, str]] = []
     for f in sorted(Path(docs_dir).glob("*.md")):
-        text = f.read_text(encoding="utf-8", errors="replace")
-        hits = sum(text.lower().count(t) for t in tokens)
+        text = f.read_text(encoding="utf-8", errors="replace").lower()
+        hits = 0
+        for t in tokens:
+            if t in text:
+                hits += 1
+                continue
+            # Prefix fallback for long tokens: "postgresql" -> "postgres",
+            # "checkpointing" -> "checkpointers" / "checkpointer".
+            if len(t) >= 7 and t[:6] in text:
+                hits += 1
         if hits > 0:
             matches.append((f.stem, hits, text[:500]))
     matches.sort(key=lambda m: -m[1])
