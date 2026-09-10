@@ -7,6 +7,7 @@
 - **Estimated:** 1.5 weeks (original plan value, not measured effort)
 - **Exit criterion:** A clean setup works; seeded regression fails CI; traces do not expose synthetic secrets
 - **Status:** shipped — merged into `apps/agentops-workbench/` via PR #8
+- **Build output:** [`step6-output.json`](step6-output.json) — audit vs. acceptance criterion: **AC NOT met** (MCP wiring deferred here never done; 1 regression test fails in dev env). See [`../build-report.md`](../build-report.md).
 
 ## Deliverables (planned)
 
@@ -21,6 +22,7 @@
 - `alembic/`, `docker/docker-compose.yml` (postgres + api + worker + streamlit + mcp-document)
 - `docs/RUNBOOK.md`
 - Async worker via `concurrent.futures` (production-swappable to arq + Redis)
+- **Gaps (see `step6-output.json`):** the "step 6 wires real MCP calls" work that the step-5 stubs deferred here was never done; the seeded regression suite has one failing test in the dev env (`.env`-sensitive isolation); "a clean docker setup works" is not covered by any test or CI job
 
 ## Cross-references
 

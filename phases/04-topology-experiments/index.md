@@ -7,6 +7,7 @@
 - **Estimated:** 1.0 week (original plan value, not measured effort)
 - **Exit criterion:** Selection follows measured utility; a simpler workflow may win
 - **Status:** shipped — merged into `apps/agentops-workbench/` via PR #8
+- **Build output:** [`step5-output.json`](step5-output.json) — audit vs. acceptance criterion: **AC NOT met** (tool dispatch stubbed in both variants; comparison behind ADR-0006 is degenerate). See [`../build-report.md`](../build-report.md).
 
 ## Deliverables (planned)
 
@@ -20,7 +21,7 @@
 - `src/agentops_workbench/graph/{single_agent,planner_executor,topology}.py` behind one registry
 - `docs/adr/0006-topology.md` — fixed graph shipped as the default
 - Held-out run notes: `single_agent` burned 2-10x completion tokens vs `fixed` for no measured gain
-- Follow-up (tracked): `single_agent` / `planner_executor` TOOL branches are currently tool-less
+- **Gap (see `step5-output.json`):** tool dispatch is `# stub for MVP` in *both* `single_agent` and `planner_executor`; `tool_correctness` is 0/24 on the held-out set, so the matched-budget comparison behind ADR-0006 is between three tool-less answer generators. `planner_executor` was not in the held-out run.
 
 ## Cross-references
 

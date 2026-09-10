@@ -1,0 +1,39 @@
+{
+  "step": 1,
+  "phase": 0,
+  "slug": "00-bootstrap",
+  "title": "Repo bootstrap, ADRs, scope fixtures, pilot dataset",
+  "status": "completed",
+  "exit_code": 0,
+  "acceptance_criterion": "Another developer can score the pilot without guessing what \"good\" means",
+  "acceptance_met": true,
+  "duration_seconds": null,
+  "timestamp": "2026-09-11T00:00:00Z",
+  "verdict": "Bootstrap deliverables are all present and unit-tested. AC met: a reviewer can read scope.md + a case + the schema and know what a correct outcome is.",
+  "evidence": [
+    "docs/scope.md present (in/out scope, permissions, exclusions)",
+    "fixtures/cases/schema.json + tests/test_fixture_schema.py = 33 tests pass",
+    "fixtures/cases/{pilot=30, dev=18, val=6, held_out=6}; every case carries id/family_id/task/expected_outcome/allowed_tools/source_refs/reviewer/split",
+    "fixtures/docs/ = 8 synthetic docs (doc-001..008)",
+    "docs/adr/0001..0004 present + tests/test_adrs_present.py = 8 tests pass",
+    "pyproject.toml pins python>=3.10, langgraph==1.2.11; uv.lock present; tests/test_smoke.py = 2 tests pass"
+  ],
+  "gaps": [
+    "single reviewer for all cases (reviewer=sh-ai-x everywhere) \u2014 no independent second reviewer"
+  ],
+  "stdout": "",
+  "stderr": "",
+  "synthesized": {
+    "note": "The /dev-kit:build runner was never executed in this monorepo. The AgentOps Workbench was built in a standalone repo and imported via PR #8, so no per-step sub-agent subprocess output was ever captured. This file is an audit of the shipped tree under apps/agentops-workbench/ against the step's acceptance criterion, plus a re-run of the deterministic gates on 2026-09-11. status / acceptance_met are judgements against the code as merged, not a recorded process exit.",
+    "generated_at": "2026-09-11",
+    "workbench_code_sha": "91194d8",
+    "audit": "2026-09-11 (revised \u2014 first pass over-reported every step as completed)",
+    "gate_rerun": {
+      "cmd": "cd apps/agentops-workbench && uv run pytest -q ; uv run ruff check .",
+      "pytest": "154 collected, 153 passed, 1 failed",
+      "ruff": "All checks passed",
+      "failing_test": "tests/test_auth_hardening.py::test_has_insecure_jwt_secret_flags_default_and_short",
+      "failing_test_cause": "Settings() reads apps/agentops-workbench/.env (strong AGENTOPS_JWT_SECRET) without isolating the pydantic-settings env-file source; the insecure-default assertion is not met. Passes in clean CI. Test-isolation defect, not a production bug."
+    }
+  }
+}
