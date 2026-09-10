@@ -74,21 +74,50 @@ def _strip_think(text: str) -> str:
 
 
 def _resolve_token() -> str:
+    """Resolve the bearer token to send with /v1/runs POSTs.
+
+    Two paths:
+      1. Out-of-band JWT pasted into the sidebar (any provider).
+      2. Local dev token auto-minted for provider=local-fake when
+         AGENTOPS_ALLOW_DEV_TOKEN=1 is set on the Streamlit process.
+
+    The dev-token path is the recommended default for local dev; the
+    Bearer field is hidden when it's available so the operator can't
+    accidentally type a stale token that gets cached in session_state
+    (the previous UX had a sticky Bearer field that survived reruns
+    and rejected the auto-mint with HTTP 401).
+    """
     with st.sidebar:
         st.header("Identity")
-        token = st.text_input(
-            "Bearer token (JWT)",
-            type="password",
-            help="Paste a token issued by the API operator.",
-        ).strip()
-        if not token and _dev_token_allowed():
+
+        if _dev_token_allowed():
+            # Dev mode: hide the Bearer field entirely; just mint a
+            # fresh token for the chosen principal on every Submit.
+            # This avoids the "stale pasted token wins over fresh
+            # auto-mint" footgun that surfaced as repeated 401s.
             from agentops_workbench.api.server import issue_token
 
-            principal = st.text_input("dev principal_id", value="demo-user")
+            principal = st.text_input("principal_id", value="demo-user", key="dev_principal")
             if principal.strip():
                 token = issue_token(principal.strip())
                 st.caption("local dev token (provider=local-fake only)")
-    return token
+                return token
+            return ""
+
+        # Out-of-band path (production / real provider). Explicit
+        # key= so the operator can clear session_state via Clear button.
+        st.text_input(
+            "Bearer token (JWT)",
+            type="password",
+            key="bearer_jwt",
+            help="Paste a token issued by the API operator.",
+        )
+        col1, _ = st.columns([1, 4])
+        with col1:
+            if st.button("Clear", key="clear_bearer"):
+                st.session_state.pop("bearer_jwt", None)
+                st.rerun()
+        return st.session_state.get("bearer_jwt", "").strip()
 
 
 def main() -> None:
