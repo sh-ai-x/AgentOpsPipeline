@@ -1,27 +1,48 @@
 # Build report — AgentOps Workbench (Phases 0–6)
 
-> Reconstructed build record. The `/dev-kit:build` runner was **never executed
-> in this monorepo** — the workbench was built in a standalone repo and imported
-> via PR #8, so the per-step `step<N>-output.json` files the runner would have
-> emitted never existed. This report and the seven
-> `phases/<NN-slug>/step<N>-output.json` files are reconstructed from the shipped
-> artefacts under `apps/agentops-workbench/` plus a re-run of the deterministic
-> gates on **2026-09-11**.
+> **Audit, not a build log.** `/dev-kit:build` was never run in this monorepo —
+> the workbench was built standalone and imported via PR #8, so the per-step
+> `step<N>-output.json` files the runner emits never existed. This report and the
+> seven `phases/<NN-slug>/step<N>-output.json` files audit the **merged tree**
+> under `apps/agentops-workbench/` against each step's acceptance criterion, plus
+> a re-run of the deterministic gates on **2026-09-11**.
 >
-> `exit_code: 0` / `acceptance_met` in each JSON is a judgement against the
-> shipped tree, not a recorded process exit.
+> The first pass of these files marked every step `completed` / `acceptance_met:
+> true`. That was wrong. Corrected verdicts below.
 
-## Per-step summary
+## Per-step verdict
 
-| Step | Phase | Output file | AC met | Key artefacts |
-|------|-------|-------------|--------|---------------|
-| 1 | 0 · 00-bootstrap | [`00-bootstrap/step1-output.json`](00-bootstrap/step1-output.json) | yes | `pyproject.toml` + lock, `docs/scope.md`, `fixtures/cases/schema.json`, 30 pilot cases, 8 docs, ADR 0001–0004 |
-| 2 | 1 · 01-runnable-agent | [`01-runnable-agent/step2-output.json`](01-runnable-agent/step2-output.json) | yes | `llm/`, `graph/{fixed,state}.py`, `api/server.py`, `mocks/tickets.py`, `worker/runner.py`, `streamlit_app/app.py` |
-| 3 | 2 · 02-mcp-integration | [`02-mcp-integration/step3-output.json`](02-mcp-integration/step3-output.json) | yes | `mcp/mcp_servers/document/server.py`, `mcp/mcp_servers/filesystem/scope_guard.py` |
-| 4 | 3 · 03-benchmark-prompts | [`03-benchmark-prompts/step4-output.json`](03-benchmark-prompts/step4-output.json) | yes | `fixtures/cases/{dev,val,held_out}/`, `HELD_OUT_SHA256.txt`, `benchmark/{scorers,load}.py`, `experiments/prompts-v1/` |
-| 5 | 4 · 04-topology-experiments | [`04-topology-experiments/step5-output.json`](04-topology-experiments/step5-output.json) | yes | `graph/{single_agent,planner_executor,topology}.py`, `docs/adr/0006-topology.md` |
-| 6 | 5 · 05-delivery | [`05-delivery/step6-output.json`](05-delivery/step6-output.json) | yes | `observability/otel.py`, `alembic/versions/0001_initial.py`, `docker/`, `docs/RUNBOOK.md`, `tests/test_auth_hardening.py` |
-| 7 | 6 · 06-held-out-portfolio | [`06-held-out-portfolio/step7-output.json`](06-held-out-portfolio/step7-output.json) | yes | `experiments/held-out-v1/`, `docs/EVIDENCE_CARD.md`, `docs/demo.md` |
+| Step | Phase | AC met? | One-line reason | Output |
+|------|-------|---------|-----------------|--------|
+| 1 | 0 · bootstrap | **yes** | scope + schema + 30 reviewed cases + 8 docs + 4 ADRs, all unit-tested | [`00-bootstrap/step1-output.json`](00-bootstrap/step1-output.json) |
+| 2 | 1 · runnable-agent | **no** | "failed tool is visible" unimplemented (runs issue zero tool calls); refusal only vacuously tested; approval→publish flow not wired | [`01-runnable-agent/step2-output.json`](01-runnable-agent/step2-output.json) |
+| 3 | 2 · mcp-integration | **no** | 2 tools (not 5), tested in-process only; no run invokes the MCP server; no stdio-subprocess integration test. Idempotent-ledger half is met | [`02-mcp-integration/step3-output.json`](02-mcp-integration/step3-output.json) |
+| 4 | 3 · benchmark-prompts | **yes** | frozen held-out SHA (test-enforced), per-case reviewer/split, tuning on val only | [`03-benchmark-prompts/step4-output.json`](03-benchmark-prompts/step4-output.json) |
+| 5 | 4 · topology-experiments | **no** | tool dispatch is `# stub for MVP` in both variants; `tool_correctness` 0/24; the comparison behind ADR-0006 is degenerate | [`04-topology-experiments/step5-output.json`](04-topology-experiments/step5-output.json) |
+| 6 | 5 · delivery | **no** | the "wire real MCP calls" work step 5 deferred here was never done; 1 regression test fails in the dev env; "clean docker setup works" is unverified | [`05-delivery/step6-output.json`](05-delivery/step6-output.json) |
+| 7 | 6 · held-out-portfolio | **partial** | reproducible (frozen SHA + manifest) ✓; but `task_success` / `tool_correctness` are 0/24, so the shipping-decision basis is thin; freeze tag + demo recording missing | [`06-held-out-portfolio/step7-output.json`](06-held-out-portfolio/step7-output.json) |
+
+**2 of 7 acceptance criteria are cleanly met (steps 1, 4).** Steps 2, 3, 5, 6
+have a real, shipped surface but do not satisfy their AC as written; step 7 is
+reproducible but rests on zero primary-metric signal.
+
+## Root cause tying steps 2/3/5/6/7 together
+
+The agent never issues tool calls. `graph/fixed.py` retrieves by reading
+`fixtures/docs/` directly; `graph/single_agent.py:60` and
+`graph/planner_executor.py:72` both carry `# Tool dispatch is a stub for MVP;
+step 6 wires real MCP calls`. Step 6 did not do that wiring. Consequences:
+
+- the MCP servers (step 3) are built and unit-tested but unreachable from a run;
+- the topology comparison (step 5) compares three tool-less answer generators;
+- every held-out run (step 7) reports `tool_correctness: 0.0`;
+- "failed tool is visible" (step 2) has no surface to be visible on.
+
+The document MCP server exposes **2** tools (`search_docs`, `read_document`).
+`get_issue` is a prompt string only; `create_ticket_draft` / `publish_ticket`
+are not tools — only `TicketLedger.publish()` exists, and `/v1/actions` mints a
+nonce without ever calling it. `docs/EVIDENCE_CARD.md`'s "5 MVP tools" and
+"144 tests" are both stale (2 real tools; the tree collects 154 tests).
 
 ## Deterministic gates — re-run 2026-09-11
 
@@ -31,62 +52,52 @@ uv run pytest -q      -> 154 collected, 153 passed, 1 failed
 uv run ruff check .   -> All checks passed
 ```
 
-Test count by file (154 total):
+Test count by file (154):
 
-| File | Tests |
-|------|-------|
-| `tests/test_fixture_schema.py` | 33 |
-| `tests/mcp/test_document_server.py` | 22 |
-| `tests/benchmark/test_scorers.py` | 16 |
-| `tests/test_observability.py` | 15 |
-| `tests/test_api_runs.py` | 15 |
-| `tests/graph/test_topology.py` | 11 |
-| `tests/test_auth_hardening.py` | 10 |
-| `tests/test_held_out.py` | 8 |
-| `tests/test_adrs_present.py` | 8 |
-| `tests/llm/test_factory.py` | 4 |
-| `tests/llm/test_local_fake_adapter.py` | 3 |
-| `tests/experiments/test_prompts.py` | 3 |
-| `tests/worker/test_runner.py` | 2 |
-| `tests/test_smoke.py` | 2 |
-| `tests/test_alembic.py` | 2 |
-
-(The app `README.md` still tags "137 tests"; `docs/EVIDENCE_CARD.md` says "144";
-the current tree collects 154.)
+| File | Tests | | File | Tests |
+|------|-------|-|------|-------|
+| `test_fixture_schema.py` | 33 | | `test_auth_hardening.py` | 10 |
+| `mcp/test_document_server.py` | 22 | | `test_held_out.py` | 8 |
+| `benchmark/test_scorers.py` | 16 | | `test_adrs_present.py` | 8 |
+| `test_observability.py` | 15 | | `llm/test_factory.py` | 4 |
+| `test_api_runs.py` | 15 | | `llm/test_local_fake_adapter.py` | 3 |
+| `graph/test_topology.py` | 11 | | `experiments/test_prompts.py` | 3 |
+| `worker/test_runner.py` | 2 | | `test_smoke.py` | 2 |
+| `test_alembic.py` | 2 | | | |
 
 ### The one failing test
 
 `tests/test_auth_hardening.py::test_has_insecure_jwt_secret_flags_default_and_short`
+— asserts the default JWT secret is flagged insecure, but `Settings`
+(pydantic-settings) reads `apps/agentops-workbench/.env`, which sets a strong
+`AGENTOPS_JWT_SECRET`, so the check returns `False`. **Test-isolation defect, not
+a production bug**; passes in CI where no `.env` exists. Fix: build the `Settings`
+under test with `_env_file=None` or monkeypatch the source.
 
-- **Cause:** the test asserts `Settings(provider="local-fake").has_insecure_jwt_secret() is True`
-  (the default secret `dev-only-please-rotate` must be flagged). `Settings` is a
-  `pydantic-settings` model that reads `apps/agentops-workbench/.env`; that local
-  file sets a strong `AGENTOPS_JWT_SECRET`, so the check returns `False` and the
-  assertion fails. The test does not isolate the `.env` source.
-- **Scope:** test-isolation defect, **not** a production-code bug. It passes in CI,
-  where no `.env` file is present.
-- **Suggested fix:** construct the `Settings` under test with `_env_file=None`, or
-  `monkeypatch` the settings source, so the assertion is independent of the
-  developer's local `.env`.
+### Weak / vacuous tests found during the audit
+
+- `graph/test_topology.py`-adjacent `test_fixed_graph_refuses_when_classifier_returns_refuse`
+  asserts nothing unless `route == "refuse"` (the comment says it forces REFUSE; the code does not).
+- `test_api_runs.py::test_run_reaches_terminal_state` accepts `state == FAILED`,
+  so it does not prove a normal task answers.
 
 ## Live experiments (frozen, `provider=minimax` / `MiniMax-M3`)
 
-| Experiment | Runs | Tokens | Cost | Notes |
-|------------|------|--------|------|-------|
-| Held-out (`experiments/held-out-v1/`) | 24 (6 cases × 2 topologies × 2 trials) | 9,074 (5,782 prompt + 3,292 completion) | $0.0124 | `prompt_version=v1_baseline`; `code_sha=a5b489b`; held-out SHA `d3bef8c3…d8d0a5` |
-| 3-prompt comparison (`experiments/prompts-v1/`) | 18 (6 val cases × 3 versions) | 14,597 | ~$0.02 | `v1_baseline` + `v2_structured` advance; `v3_minimal` published as the unsuccessful change |
+| Experiment | Runs | Tokens | Cost | task_success | tool_correctness |
+|------------|------|--------|------|--------------|------------------|
+| Held-out (`experiments/held-out-v1/`) | 24 | 9,074 | $0.0124 | 0/24 | 0/24 |
+| 3-prompt (`experiments/prompts-v1/`) | 18 | 14,597 | ~$0.02 | 0/18 | — |
 
-**Measured task_success is 0%** on every held-out and prompt run. Per
-`docs/EVIDENCE_CARD.md` this is the conservative substring-match scorer scoring
-semantically-correct answers as false — a documented limitation, not a
-regression. The shipping decision (fixed graph as default) rests on token
-efficiency (`single_agent` burned 2–10× the completion tokens of `fixed`) and
-`retrieval_recall` (1.0 on 5/6 held-out families), not on an end-to-end success
-rate.
+`retrieval_recall` on the held-out set: 1.0 on 20/24 runs, 0.5 on 4/24. The
+agent finds the right documents and never acts on them.
 
-## Open items (carried from the shipped docs)
+## What would close the gaps
 
-- `experiment-v1-frozen` git tag was never cut.
-- `docs/demo.md` is a 5-minute script, not a recording.
-- `single_agent` / `planner_executor` TOOL branches are tool-less (only `fixed` wires MCP tools end to end).
-- Fix the `.env`-sensitive auth-hardening test isolation (above).
+1. Wire `graph/single_agent.py` + `graph/planner_executor.py` tool dispatch to a
+   real MCP client (removes both `# stub for MVP` comments).
+2. Add a stdio-subprocess integration test for the document server.
+3. Connect run → ticket draft → `/v1/actions` approve → `TicketLedger.publish()`;
+   add the "failed tool is visible" test.
+4. Fix the two vacuous tests above; fix the `.env`-sensitive auth test isolation.
+5. Re-run the held-out experiment once tools work; cut `experiment-v1-frozen`.
+6. Refresh `docs/EVIDENCE_CARD.md` counts (2 tools, 154 tests).

@@ -3,30 +3,37 @@
   "phase": 4,
   "slug": "04-topology-experiments",
   "title": "Topology variants + planner/executor",
-  "exit_code": 0,
-  "status": "completed",
+  "status": "partial",
+  "exit_code": 1,
   "acceptance_criterion": "Selection follows measured utility; a simpler workflow may win",
-  "acceptance_met": true,
+  "acceptance_met": false,
   "duration_seconds": null,
   "timestamp": "2026-09-11T00:00:00Z",
-  "stdout": "Phase 4 shipped. Single-agent (ReAct-style) and bounded planner/executor variants on the same\ntool contracts, selectable through a registry. ADR-0006 records the shipping choice: the fixed\ngraph is the default because the held-out comparison showed the simpler topology wins \u2014 single_agent\nspent 2-10x the completion tokens of fixed for no measurable quality gain.\n\nOnly fixed and single_agent were carried into the held-out run (see held-out-v1/manifest.json\nselected_topologies); planner_executor ships but was not part of the frozen experiment.\n",
-  "stderr": "",
+  "verdict": "The variants exist, terminate, and share a budget; the decision to ship 'fixed' is recorded. But the comparison that is supposed to justify it is degenerate \u2014 tools are stubbed everywhere, so 'selection follows measured utility' is not actually demonstrated. NOT complete.",
   "evidence": [
-    "src/agentops_workbench/graph/{single_agent,planner_executor,topology}.py \u2014 three topologies behind one registry",
-    "tests/graph/test_topology.py = 11 tests, all pass",
-    "docs/adr/0006-topology.md \u2014 fixed graph shipped as the default",
-    "experiments/held-out-v1/uncertainty.md: fixed 0/12, single_agent 0/12; single_agent burned 2-10x completion tokens for no measured gain"
+    "src/agentops_workbench/graph/{single_agent,planner_executor,topology}.py; TOPOLOGIES registry has 3 entries; tests/graph/test_topology.py = 11 tests pass (termination, max-steps, shared budget constants)",
+    "docs/adr/0006-topology.md records 'fixed graph is the default'",
+    "experiments/held-out-v1: fixed vs single_agent compared; single_agent burned 2-10x completion tokens for 0/12 vs 0/12 task_success"
   ],
-  "artifacts": [
-    "apps/agentops-workbench/src/agentops_workbench/graph/single_agent.py",
-    "apps/agentops-workbench/src/agentops_workbench/graph/planner_executor.py",
-    "apps/agentops-workbench/src/agentops_workbench/graph/topology.py",
-    "apps/agentops-workbench/docs/adr/0006-topology.md"
+  "gaps": [
+    "Tool dispatch is stubbed in BOTH variants: single_agent.py:60 '# Tool dispatch is a stub for MVP; step 6 wires real MCP calls' and planner_executor.py:72 same. Step 6 never did this.",
+    "tool_correctness = 0.0 on all 24 held-out runs \u2014 no topology ever issues a correct tool call, so the 'matched-budget comparison' compares three tool-less answer generators.",
+    "planner_executor was not included in the held-out run (selected_topologies = [fixed, single_agent]); it ships untested against the benchmark.",
+    "The ADR-0006 'simpler workflow wins' conclusion rests on token count, not on measured task utility (which is 0 for every variant)."
   ],
+  "stdout": "",
+  "stderr": "",
   "synthesized": {
-    "note": "The /dev-kit:build runner was never executed in this monorepo. The AgentOps Workbench was built in a standalone repo and imported via PR #8, so no per-step sub-agent subprocess output was ever captured. This file is reconstructed from the shipped artifacts under apps/agentops-workbench/ plus a re-run of the deterministic gates on 2026-09-11. exit_code / acceptance_met are judgements against the shipped tree, not a recorded process exit.",
+    "note": "The /dev-kit:build runner was never executed in this monorepo. The AgentOps Workbench was built in a standalone repo and imported via PR #8, so no per-step sub-agent subprocess output was ever captured. This file is an audit of the shipped tree under apps/agentops-workbench/ against the step's acceptance criterion, plus a re-run of the deterministic gates on 2026-09-11. status / acceptance_met are judgements against the code as merged, not a recorded process exit.",
     "generated_at": "2026-09-11",
     "workbench_code_sha": "91194d8",
-    "held_out_manifest_code_sha": "a5b489b"
+    "audit": "2026-09-11 (revised \u2014 first pass over-reported every step as completed)",
+    "gate_rerun": {
+      "cmd": "cd apps/agentops-workbench && uv run pytest -q ; uv run ruff check .",
+      "pytest": "154 collected, 153 passed, 1 failed",
+      "ruff": "All checks passed",
+      "failing_test": "tests/test_auth_hardening.py::test_has_insecure_jwt_secret_flags_default_and_short",
+      "failing_test_cause": "Settings() reads apps/agentops-workbench/.env (strong AGENTOPS_JWT_SECRET) without isolating the pydantic-settings env-file source; the insecure-default assertion is not met. Passes in clean CI. Test-isolation defect, not a production bug."
+    }
   }
 }

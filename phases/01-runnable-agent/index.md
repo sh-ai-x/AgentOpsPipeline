@@ -7,7 +7,7 @@
 - **Estimated:** 1.5 weeks (original plan value, not measured effort)
 - **Exit criterion:** Normal task completes; missing evidence produces a supported refusal; failed tool is visible
 - **Status:** shipped — merged into `apps/agentops-workbench/` via PR #8
-- **Build output:** [`step2-output.json`](step2-output.json) — reconstructed step record (see [`../build-report.md`](../build-report.md))
+- **Build output:** [`step2-output.json`](step2-output.json) — audit vs. acceptance criterion: **AC NOT met** (runs issue no tool calls; refusal only vacuously tested; approval→publish not wired). See [`../build-report.md`](../build-report.md).
 
 ## Deliverables (planned)
 
@@ -23,6 +23,7 @@
 - `src/agentops_workbench/api/server.py` — `/v1/runs`, `/v1/runs/{id}`, `/v1/runs/{id}/cancel`, `/v1/actions`
 - `src/agentops_workbench/mocks/tickets.py` (idempotent on `action_key`); `streamlit_app/app.py`
 - JWT secret startup guard + alg allowlist added in PR #8 (review critical)
+- **Gaps (see `step2-output.json`):** `_classify` is a keyword heuristic and never returns `clarify`; the run path issues no tool calls, so "failed tool is visible" is unimplemented; `/v1/actions` mints a nonce but never calls `TicketLedger.publish()`, so run → draft → approve → publish is not connected
 
 ## Cross-references
 

@@ -47,17 +47,26 @@ The tracked anchors are:
 
 ## Build record
 
-The `/dev-kit:build` runner was never executed in this monorepo (the workbench
-was built standalone and imported via PR #8), so no per-step
-`step<N>-output.json` was ever emitted. [`build-report.md`](build-report.md)
-reconstructs the build from the shipped artefacts plus a re-run of the
-deterministic gates on 2026-09-11, and each phase carries a reconstructed
-`phases/<NN-slug>/step<N>-output.json`.
+`/dev-kit:build` was never run in this monorepo (the workbench was built
+standalone and imported via PR #8), so no per-step `step<N>-output.json` was
+ever emitted. [`build-report.md`](build-report.md) **audits the merged tree
+against each step's acceptance criterion** and each phase carries a
+`phases/<NN-slug>/step<N>-output.json` with its verdict.
+
+Result: **2 of 7 acceptance criteria are cleanly met** (step 1 bootstrap, step 4
+dataset). Steps 2, 3, 5, 6 ship a real surface but do not satisfy their AC as
+written; step 7 is reproducible but rests on zero primary-metric signal. The
+common cause: the agent never issues tool calls — `graph/single_agent.py` and
+`graph/planner_executor.py` both carry `# Tool dispatch is a stub for MVP; step
+6 wires real MCP calls`, and step 6 never did that wiring. So the MCP servers
+(step 3) are unreachable from a run, the topology comparison (step 5) is between
+tool-less generators, and every held-out run (step 7) reports
+`tool_correctness: 0.0`.
 
 Gates re-run 2026-09-11: `uv run pytest -q` → 153 passed, 1 failed (154
-collected); `uv run ruff check .` → clean. The single failure
+collected); `uv run ruff check .` → clean. The one failure
 (`test_has_insecure_jwt_secret_flags_default_and_short`) is a test-isolation
-defect — `Settings()` reads a local `.env` with a strong `AGENTOPS_JWT_SECRET` —
+defect (`Settings()` reads a local `.env` with a strong `AGENTOPS_JWT_SECRET`)
 and passes in clean CI. See [`build-report.md`](build-report.md).
 
 ## Pins (project-wide)
@@ -97,14 +106,16 @@ describe how the agent runs, not the monorepo layout). Project-level index:
 
 ## Status
 
-- **Phases 0–6:** implemented in `apps/agentops-workbench/`, merged via PR #8.
+- **Phases 0–6:** merged into `apps/agentops-workbench/` via PR #8 — but the [`build-report.md`](build-report.md) audit finds only steps 1 and 4 fully satisfy their acceptance criteria; steps 2/3/5/6 have unwired tool execution and step 7 rests on zero task-success signal.
 - **Local gates (re-run 2026-09-11):** `uv run pytest` 153/154 (1 env-only failure), `uv run ruff check` clean — full breakdown in [`build-report.md`](build-report.md).
 - **Live experiments:** held-out (24 runs) and 3-prompt comparison (18 runs) run
   against `MiniMax-M3` — 42 runs, ~$0.03 total. `v3_minimal` published as the
   unsuccessful change per the proposal.
-- **Known limitation:** the substring-match task scorer is conservative;
-  `task_success` reads ~0% on several runs whose answers are semantically
-  correct. Tracked in `apps/agentops-workbench/docs/EVIDENCE_CARD.md`.
+- **Known limitations:** (1) tool execution is stubbed in the `single_agent` /
+  `planner_executor` topologies (`# stub for MVP`), so no agent run issues a tool
+  call and `tool_correctness` is 0/24 on the held-out set. (2) The substring-match
+  task scorer is also conservative. (3) `EVIDENCE_CARD.md` overstates the tool
+  count (5 claimed, 2 real) and the test count (144 claimed, 154 collected).
 
 See [`../apps/agentops-workbench/docs/EVIDENCE_CARD.md`](../apps/agentops-workbench/docs/EVIDENCE_CARD.md)
 for the shipped summary and
