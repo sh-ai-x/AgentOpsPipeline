@@ -24,6 +24,11 @@
 - Async worker via `concurrent.futures` (production-swappable to arq + Redis)
 - **Gaps (see `step6-output.json`):** the "step 6 wires real MCP calls" work that the step-5 stubs deferred here was never done; the seeded regression suite has one failing test in the dev env (`.env`-sensitive isolation); "a clean docker setup works" is not covered by any test or CI job
 
+**Post-launch patches** (since PR #8):
+- PR #12: `GET /_debug/retrieve?task=<text>` endpoint (no auth; dev-only) — operator can verify retrieval before running a full `/v1/runs` cycle.
+- PR #13: Streamlit UI hardened — the Bearer-token field is hidden when `AGENTOPS_ALLOW_DEV_TOKEN=1` is set; the dev-token path auto-mints. Out-of-band mode shows an explicit `Clear` button. Eliminates the 'stale pasted token → HTTP 401' loop.
+- PR #15: 6 PNG screenshots of the running UI captured via Playwright + system Chrome; `scripts/screenshot_streamlit.py` regenerator; `scripts/print_metrics.py` CLI; new `GET /_debug/metrics` endpoint with 30s-TTL cache and provider guard (403 unless `provider=local-fake` or `AGENTOPS_ALLOW_DEBUG_METRICS=1`).
+
 ## Cross-references
 
 - Source proposal: [`../../docs/proposals/agentops-workbench-proposal.md`](../../docs/proposals/agentops-workbench-proposal.md)

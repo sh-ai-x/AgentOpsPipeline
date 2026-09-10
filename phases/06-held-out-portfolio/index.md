@@ -24,6 +24,8 @@
 - `docs/EVIDENCE_CARD.md`, `docs/demo.md` (5-minute demo script)
 - **Gaps (see `step7-output.json`):** `task_success` 0/24 and `tool_correctness` 0/24 — the shipping basis is `retrieval_recall` + token count, not an end-to-end signal (a consequence of the stubbed tools in steps 5–6); the `experiment-v1-frozen` tag was never cut; the demo is a script, not a recording
 
+**Post-launch patches**: none since PR #8. Held-out re-run on the post-PR-#8 code is **not yet performed** — the live measurements (`24 runs, 9,074 tokens, $0.0124`) are still from PR #8's run. A re-run on the new retrieval-normalization + synthesis code would update numbers; not done in this scope.
+
 ## Cross-references
 
 - Source proposal: [`../../docs/proposals/agentops-workbench-proposal.md`](../../docs/proposals/agentops-workbench-proposal.md)

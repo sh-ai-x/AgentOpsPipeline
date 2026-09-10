@@ -23,6 +23,10 @@
 - `experiments/prompts-v1/{report.md,outcomes.jsonl}` — 18 live runs on `MiniMax-M3`
 - `v3_minimal` published as the unsuccessful change (no system prompt -> longer, less-focused output)
 
+**Post-launch patches** (since PR #8):
+- PR #14: when running under `provider=local-fake`, the benchmark output now uses `LocalFakeAdapter.chat()` synthesis (quoted passages + 'see also' from the corpus) instead of round-robin canned lines. Held-out numbers from PR #8 are unchanged — synthesis affects presentation, not retrieval outcomes.
+- PR #10: retrieval normalization (tokenization, stopwords, prefix fallback) bumps `retrieval_recall_at_k` on the held-out set; the substring-match scorer remains conservative per proposal limitations.
+
 ## Cross-references
 
 - Source proposal: [`../../docs/proposals/agentops-workbench-proposal.md`](../../docs/proposals/agentops-workbench-proposal.md)

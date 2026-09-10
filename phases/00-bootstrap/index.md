@@ -24,6 +24,8 @@
 - `docs/adr/0001-langgraph.md`, `0002-mcp-boundaries.md`, `0003-provider-abstraction.md`, `0004-dataset-separation.md`
 - ADR-0005 was reserved for a runtime-safety / cost-cap decision that was folded into ADR-0003; see [`../../docs/adr/0005-runtime-safety.md`](../../docs/adr/0005-runtime-safety.md)
 
+**Post-launch patches** (since PR #8): PR #11 added `.env.example` + `.dev-kit/gates.json` + `hooks/ralph-attended-lock.sh` — operational hygiene for the consumer repo. No build-time artefact changes.
+
 ## Cross-references
 
 - Source proposal: [`../../docs/proposals/agentops-workbench-proposal.md`](../../docs/proposals/agentops-workbench-proposal.md)
