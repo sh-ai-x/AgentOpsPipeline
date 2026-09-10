@@ -96,7 +96,7 @@ Returns (recomputed on every request):
 ```
 
 **Cost model**: `prompt_tokens/1M × input_per_1m + completion_tokens/1M × output_per_1m` per call, using
-`src/agentops_workbench/llm/pricing.py::MODEL_PRICING` (default `MiniMax-M3 = $0.50/$1.50 per 1M`). Override per-deployment via:
+`src/agentops_workbench/llm/pricing.py::DEFAULT_PRICING` (default `MiniMax-M3 = $0.50/$1.50 per 1M`). Override per-deployment via:
 
 ```bash
 export AGENTOPS_PRICING_JSON='{"my-fine-tune":{"input_per_1m":1.20,"output_per_1m":3.40}}'

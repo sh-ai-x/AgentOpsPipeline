@@ -26,6 +26,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
+from .. import dev_metrics
 from ..db.models import Action, Run
 from ..db.session import session_scope
 from ..graph.fixed import run_fixed_graph
@@ -265,108 +266,38 @@ def debug_retrieve(task: str) -> dict:
 def debug_metrics() -> dict:
     """Live, measurable state of the workbench app.
 
-    Web-debuggable surface so the operator can see what's happening
-    without a CLI. Returns:
-      - test_count: pytest tests collected
-      - db_stats: {runs, tool_calls, actions} from the local SQLite ledger
-      - screenshots: {count, bytes_total} for docs/screenshots/*.png
-      - line_diff_vs_main: (+added, -removed) under apps/agentops-workbench/
-      - settings: {provider, model} (sanitized)
-
-    Cheap to call; recomputes on each request so the values stay live.
+    Provider-guard: only serves when `provider=local-fake` or when
+    `AGENTOPS_ALLOW_DEBUG_METRICS=1` is set. Production deployments
+    with a real LLM should require an authenticated principal here;
+    left as the explicit opt-in to keep the dev path frictionless.
     """
-    import sqlite3
-    import subprocess
-
-    workbench = Path(__file__).resolve().parent.parent.parent.parent
-    repo_root = workbench.parent.parent
-    db_path = workbench / "agentops.db"
-    screenshot_dir = workbench / "docs" / "screenshots"
-
-    # Test count via pytest --collect-only
-    test_n = -1
-    try:
-        out = subprocess.run(
-            ["uv", "run", "pytest", "--collect-only", "-q"],
-            cwd=str(workbench), check=False, capture_output=True, text=True, timeout=60,
-        ).stdout
-        for line in out.splitlines():
-            if "tests collected" in line or "test collected" in line:
-                test_n = int(line.split()[0].replace("tests", "").replace("test", "").strip())
-                break
-    except Exception:
-        pass
-
-    # DB stats
-    db_stats = {"runs": 0, "tool_calls": 0, "actions": 0}
-    if db_path.exists():
-        try:
-            conn = sqlite3.connect(str(db_path))
-            cur = conn.cursor()
-            for label, table in (("runs", "runs"), ("tool_calls", "tool_calls"), ("actions", "actions")):
-                try:
-                    cur.execute(f"SELECT COUNT(*) FROM {table}")
-                    db_stats[label] = cur.fetchone()[0]
-                except sqlite3.OperationalError:
-                    pass
-            conn.close()
-        except Exception:
-            pass
-
-    # Screenshots
-    sc_count = 0
-    sc_bytes = 0
-    if screenshot_dir.exists():
-        for p in screenshot_dir.glob("*.png"):
-            sc_count += 1
-            sc_bytes += p.stat().st_size
-
-    # Line diff vs origin/main
-    add = rem = 0
-    try:
-        diff_out = subprocess.run(
-            ["git", "diff", "--numstat", "origin/main...HEAD", "--", "apps/agentops-workbench/"],
-            cwd=str(repo_root), check=False, capture_output=True, text=True, timeout=10,
-        ).stdout.strip()
-        for line in diff_out.splitlines():
-            a, r, _ = line.split("\t", 2)
-            if a == "-":
-                continue
-            add += int(a); rem += int(r)
-    except Exception:
-        pass
-
-    # Latest-run cost (most recent run's total cost from the DB).
-    recent_cost_usd = 0.0
-    if db_path.exists():
-        try:
-            conn = sqlite3.connect(str(db_path))
-            cur = conn.cursor()
-            cur.execute("SELECT cost_usd FROM runs WHERE cost_usd > 0 ORDER BY rowid DESC LIMIT 1")
-            row = cur.fetchone()
-            if row:
-                recent_cost_usd = float(row[0])
-            conn.close()
-        except Exception:
-            pass
+    settings = get_settings()
+    if settings.provider != "local-fake" and not os.environ.get("AGENTOPS_ALLOW_DEBUG_METRICS"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "/_debug/metrics is dev-only. Set provider=local-fake or "
+                "AGENTOPS_ALLOW_DEBUG_METRICS=1 to enable on a real provider."
+            ),
+        )
 
     return {
-        "test_count": test_n,
-        "db_stats": db_stats,
-        "screenshots": {"count": sc_count, "bytes_total": sc_bytes},
-        "line_diff_vs_main": {"added": add, "removed": rem},
+        "test_count": dev_metrics.test_count(),
+        "db_stats": dev_metrics.db_stats(),
+        "screenshots": dev_metrics.screenshot_stats(),
+        "line_diff_vs_main": dev_metrics.line_diff_vs_main(),
         "settings": {
-            "provider": get_settings().provider,
-            "model": get_settings().model,
+            "provider": settings.provider,
+            "model": settings.model,
         },
-        "recent_cost_usd": recent_cost_usd,
+        "recent_cost_usd": dev_metrics.recent_cost_usd(),
         "caveats": {
             "cost_usd": (
                 "Local-fake always returns 0.0 (fixture is free). For minimax/openai/anthropic, "
                 "cost is computed locally as prompt_tokens/1M * input_per_1m + "
                 "completion_tokens/1M * output_per_1m; edit "
-                "src/agentops_workbench/llm/pricing.py MODEL_PRICING or set "
-                "AGENTOPS_PRICING_JSON env var to override."
+                "src/agentops_workbench/llm/pricing.py DEFAULT_PRICING or set "
+                "AGENTOPS_PRICING_JSON env var to override. Unknown models return 0.0."
             ),
             "tool_calls": (
                 "Default graph (fixed-v1) does not invoke MCP tools — its only call is "
