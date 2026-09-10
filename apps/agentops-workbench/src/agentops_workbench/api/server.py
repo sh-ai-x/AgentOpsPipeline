@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from pathlib import Path
 import secrets
 import uuid
 from collections.abc import AsyncIterator
@@ -25,6 +26,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
+from .. import dev_metrics
 from ..db.models import Action, Run
 from ..db.session import session_scope
 from ..graph.fixed import run_fixed_graph
@@ -257,6 +259,54 @@ def debug_retrieve(task: str) -> dict:
         "matched": not no_match,
         "doc_count": len(docs),
         "docs": docs,
+    }
+
+
+@app.get("/_debug/metrics", response_model=dict)
+def debug_metrics() -> dict:
+    """Live, measurable state of the workbench app.
+
+    Provider-guard: only serves when `provider=local-fake` or when
+    `AGENTOPS_ALLOW_DEBUG_METRICS=1` is set. Production deployments
+    with a real LLM should require an authenticated principal here;
+    left as the explicit opt-in to keep the dev path frictionless.
+    """
+    settings = get_settings()
+    if settings.provider != "local-fake" and not os.environ.get("AGENTOPS_ALLOW_DEBUG_METRICS"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "/_debug/metrics is dev-only. Set provider=local-fake or "
+                "AGENTOPS_ALLOW_DEBUG_METRICS=1 to enable on a real provider."
+            ),
+        )
+
+    return {
+        "test_count": dev_metrics.test_count(),
+        "db_stats": dev_metrics.db_stats(),
+        "screenshots": dev_metrics.screenshot_stats(),
+        "line_diff_vs_main": dev_metrics.line_diff_vs_main(),
+        "settings": {
+            "provider": settings.provider,
+            "model": settings.model,
+        },
+        "recent_cost_usd": dev_metrics.recent_cost_usd(),
+        "caveats": {
+            "cost_usd": (
+                "Local-fake always returns 0.0 (fixture is free). For minimax/openai/anthropic, "
+                "cost is computed locally as prompt_tokens/1M * input_per_1m + "
+                "completion_tokens/1M * output_per_1m; edit "
+                "src/agentops_workbench/llm/pricing.py DEFAULT_PRICING or set "
+                "AGENTOPS_PRICING_JSON env var to override. Unknown models return 0.0."
+            ),
+            "tool_calls": (
+                "Default graph (fixed-v1) does not invoke MCP tools — its only call is "
+                "an in-process lexical retrieval function (not recorded as a tool call). "
+                "The planner-executor graph walks search_docs/read_document/get_issue "
+                "but requires the MCP document server to be running; without it, "
+                "tool_calls stays at 0. This is by-design, not a bug."
+            ),
+        },
     }
 
 

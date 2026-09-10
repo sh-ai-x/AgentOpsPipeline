@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from .adapter import ChatResult, LLMAdapter, Usage
+from .pricing import cost_usd
 
 
 class MinimaxAdapter(LLMAdapter):
@@ -47,7 +48,11 @@ class MinimaxAdapter(LLMAdapter):
             prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(u, "completion_tokens", 0) or 0,
             total_tokens=getattr(u, "total_tokens", 0) or 0,
-            cost_usd=0.0,
+            cost_usd=cost_usd(
+                getattr(self, "model", "unknown"),
+                getattr(u, "prompt_tokens", 0) or 0,
+                getattr(u, "completion_tokens", 0) or 0,
+            ),
         )
         self._last_usage = usage
         return ChatResult(content=content, usage=usage, raw=resp)

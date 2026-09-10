@@ -27,12 +27,84 @@ AGENTOPS_PROVIDER=minimax uv run streamlit run streamlit_app/app.py
 
 ## Live provider setup
 
-`provider=minimax` is the default for live experiments. A working
-`MINIMAX_API_KEY` lives at `/Users/sanghee/dev/dev-harness-kit/.env`
-(variable name `MINIMAX_API_KEY`). Copy that value into this app's
-`.env` (gitignored). CI uses `provider=local-fake` and needs no key.
+`provider=local-fake` is the dev default. For live experiments, set `provider=minimax` (or `anthropic`). Get a key from your MiniMax dashboard and put it into your local `.env`
+(this file is gitignored):
+
+```
+AGENTOPS_PROVIDER=minimax
+AGENTOPS_MINIMAX_API_KEY=<your-key-here>
+AGENTOPS_MINIMAX_BASE_URL=https://api.minimax.io/v1   # or .chat, per your account
+```
+
+CI uses `provider=local-fake` and needs no key.
 
 **Never commit a populated `.env`.**
+
+## Screenshots
+
+The Streamlit UI is the primary operator surface. Both screenshots are
+captured via `scripts/screenshot_streamlit.py` (Playwright driving the
+system Chrome via channel=`chrome`; no playwright-bundled browser
+download required).
+
+| Step | Capture |
+|------|---------|
+| Operator opens the UI; default task is pre-loaded; the dev-token path auto-mints for `provider=local-fake` | ![Streamlit landing](docs/screenshots/01_landing.png) |
+| After clicking **Submit** on the default LangGraph query, the run panel shows state/tokens/cost/tool-calls and the synthesized answer that quotes doc-001 + doc-002 from the corpus | ![Streamlit after submit](docs/screenshots/02_after_submit.png) |
+| SqliteCheckpointer vs PostgresCheckpointer query — different retrieval ranking + comparison-table answer from doc-002 | ![Streamlit sqlite query](docs/screenshots/03_sqlite_query.png) |
+| Off-topic query ("How do I bake sourdough bread?") — server-side refusal path with `_REFUSE_MESSAGE` | ![Streamlit unrelated query](docs/screenshots/04_unrelated_query.png) |
+| `/_debug/retrieve?task=...` JSON output — web-debug surface to inspect what the agent would surface BEFORE running a full `/v1/runs` cycle | ![Debug endpoint](docs/screenshots/05_debug_endpoint.png) |
+| `/_debug/metrics` JSON — live, recomputed on every request. Reports test count, DB ledger (runs / tool_calls / actions), screenshot bytes, diff-vs-main, and cost. Two caveats surface why `cost_usd` and `tool_calls` are 0 for the current default graph | ![Debug metrics](docs/screenshots/06_metrics_endpoint.png) |
+
+To regenerate after a UI change:
+
+```bash
+# 1) Generate a strong JWT secret and start both servers:
+JWT=$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')
+AGENTOPS_JWT_SECRET="$JWT" uv run uvicorn agentops_workbench.api.server:app --port 8000 &
+AGENTOPS_JWT_SECRET="$JWT" AGENTOPS_ALLOW_DEV_TOKEN=1 \
+  uv run streamlit run streamlit_app/app.py &
+
+# 2) Install the screenshot script's browser driver and regenerate the PNGs:
+uv sync --extra dev
+uv run python scripts/screenshot_streamlit.py
+```
+
+## Metrics
+
+Live, web-debuggable metrics for the workbench app:
+
+```bash
+curl http://127.0.0.1:8000/_debug/metrics
+```
+
+Returns (recomputed on every request):
+
+```json
+{
+  "test_count": 154,
+  "db_stats": {"runs": 47, "tool_calls": 0, "actions": 16},
+  "screenshots": {"count": 5, "bytes_total": 928525},
+  "line_diff_vs_main": {"added": 250, "removed": 5},
+  "settings": {"provider": "minimax", "model": "MiniMax-M3"},
+  "recent_cost_usd": 0.0,
+  "caveats": {
+    "cost_usd": "Local-fake always returns 0.0 (fixture is free). For minimax/openai/anthropic, cost is computed locally...",
+    "tool_calls": "Default graph (fixed-v1) does not invoke MCP tools — its only call is an in-process lexical retrieval function..."
+  }
+}
+```
+
+**Cost model**: `prompt_tokens/1M × input_per_1m + completion_tokens/1M × output_per_1m` per call, using
+`src/agentops_workbench/llm/pricing.py::DEFAULT_PRICING` (default `MiniMax-M3 = $0.50/$1.50 per 1M`). Override per-deployment via:
+
+```bash
+export AGENTOPS_PRICING_JSON='{"my-fine-tune":{"input_per_1m":1.20,"output_per_1m":3.40}}'
+```
+
+**Tool calls**: the default `fixed-v1` graph does NOT make MCP tool calls — its only call is an in-process lexical retrieval. The `planner-executor-v1` graph walks `search_docs` / `read_document` / `get_issue` but requires the MCP document server to be running; without it, `tool_calls` stays at 0. By design.
+
+**CLI equivalent**: `uv run python scripts/print_metrics.py` prints the same numbers from the CLI.
 
 ## Architecture
 
@@ -102,7 +174,7 @@ docker/
 ## Tests
 
 ```bash
-uv run pytest -q     # 137 tests
+uv run pytest -q     # 154 tests
 uv run ruff check .  # clean
 ```
 
