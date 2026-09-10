@@ -44,6 +44,30 @@ class LocalFakeAdapter(LLMAdapter):
                 {"role": "assistant", "content": "local-fake default response"}
             ]
 
+    # Keyword buckets — when the user prompt contains any of these, the
+    # adapter returns the matching scripted entry instead of round-robin
+    # cycling. Without this, the FIRST script entry (a generic refusal)
+    # would be returned for every query, including ones for which the
+    # corpus has a relevant doc. This is a *fixture*, not a real LLM:
+    # real providers read the retrieved docs and answer them.
+    _PROMPT_ANSWER_KEYWORDS: dict[tuple[str, ...], int] = {
+        ("langgraph", "checkpoint"): 1,  # "Based on the docs, you should use PostgresCheckpointer..."
+        ("postgres", "sqlite"): 2,        # "Postgres for shared/multi-instance; Sqlite for..."
+    }
+
+    def _pick_response(self, prompt: str) -> dict[str, str]:
+        """Pick the scripted entry that best matches the user prompt.
+
+        Falls back to round-robin cycling when no keyword bucket matches.
+        """
+        prompt_lower = prompt.lower()
+        for keywords, idx in self._PROMPT_ANSWER_KEYWORDS.items():
+            if all(k in prompt_lower for k in keywords) and idx < len(self._script):
+                return self._script[idx]
+        idx = self._counter % len(self._script)
+        self._counter += 1
+        return self._script[idx]
+
     def chat(
         self,
         messages: list[dict[str, str]],
@@ -56,9 +80,12 @@ class LocalFakeAdapter(LLMAdapter):
         prompt_chars = sum(len(m.get("content", "")) for m in messages)
         prompt_tokens = max(1, prompt_chars // 4)
 
-        idx = self._counter % len(self._script)
-        self._counter += 1
-        scripted = self._script[idx]
+        # Use the LAST user message as the routing signal (graph code
+        # sends system-style prompts before the user task; we want the
+        # actual question, not the surrounding boilerplate).
+        user_msgs = [m.get("content", "") for m in messages if m.get("role") == "user"]
+        prompt_text = user_msgs[-1] if user_msgs else " ".join(m.get("content", "") for m in messages)
+        scripted = self._pick_response(prompt_text)
         content = scripted.get("content", "")
         completion_tokens = max(1, len(content) // 4)
 

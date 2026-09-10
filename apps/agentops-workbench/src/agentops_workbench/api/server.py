@@ -224,6 +224,42 @@ def get_run(run_id: str, principal_id: str = Depends(require_principal)) -> RunV
         )
 
 
+@app.get("/_debug/retrieve", response_model=dict)
+def debug_retrieve(task: str) -> dict:
+    """Return the docs the agent would retrieve for `task`.
+
+    Web-debuggable surface so the operator can see what corpus the
+    fixed graph would surface BEFORE running a full /v1/runs cycle.
+    No auth — local dev tool only (the guard is `provider == "local-fake"`
+    upstream, so this is safe to leave mounted in dev).
+    """
+    from agentops_workbench.graph.fixed import _retrieve_docs
+    from agentops_workbench.settings import get_settings
+
+    settings = get_settings()
+    raw = _retrieve_docs(task)
+    no_match = raw == "(no relevant docs found)"
+    docs: list[dict[str, str]] = []
+    if not no_match:
+        # _retrieve_docs joins with "\n\n--\n\n" + prefix "[stem]: <snippet>"
+        for chunk in raw.split("\n\n--\n\n"):
+            head, _, body = chunk.partition("]: ")
+            if not body:
+                continue
+            stem = head.lstrip("[").rstrip()
+            docs.append({"stem": stem, "snippet": body[:500]})
+
+    return {
+        "task": task,
+        "provider": settings.provider,
+        "model": settings.model,
+        "docs_dir": "fixtures/docs",
+        "matched": not no_match,
+        "doc_count": len(docs),
+        "docs": docs,
+    }
+
+
 @app.post("/v1/runs/{run_id}/cancel", response_model=CancelResult)
 def cancel_run(run_id: str, principal_id: str = Depends(require_principal)) -> CancelResult:
     with session_scope() as s:
