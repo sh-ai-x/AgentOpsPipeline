@@ -1,55 +1,166 @@
-"""Drive the running Streamlit UI via headless Chrome and capture screenshots.
+r"""Drive the running Streamlit UI via headless Chrome and capture screenshots.
+
+Requires the system Google Chrome (or Chromium) -- Playwright drives it via
+channel="chrome", so no playwright-bundled browser download is needed.
+An ephemeral profile is created per launch.
 
 Usage:
     uv run python scripts/screenshot_streamlit.py
 
 Captures:
     docs/screenshots/01_landing.png            — Streamlit landing (default task pre-loaded)
-    docs/screenshots/02_after_submit.png       — After clicking Submit, full result panel
+    docs/screenshots/02_after_submit.png       — LangGraph checkpointing query result
+    docs/screenshots/03_sqlite_query.png       — SQLite vs Postgres comparison query
+    docs/screenshots/04_unrelated_query.png    — Off-topic query (refusal path)
+    docs/screenshots/05_debug_endpoint.png     — /_debug/retrieve JSON response
+
+Notes:
+- Set AGENTOPS_SCREENSHOT_NO_SANDBOX=1 only when running as root
+  (some CI images). Default uses Chrome's sandbox.
+- Wait strategy is domcontentloaded (Streamlit's persistent /_stcore/stream
+  WebSocket never reaches networkidle).
 """
 from __future__ import annotations
 
+import json
+import urllib.parse
+import urllib.request
+import os
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 
 STREAMLIT_URL = "http://127.0.0.1:8501/"
+API_BASE = "http://127.0.0.1:8000"
 OUT_DIR = Path(__file__).resolve().parent.parent / "docs" / "screenshots"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+SCENARIOS = [
+    # (filename_stem, task_text, output_filename)
+    (
+        "02_after_submit",
+        "How do I configure LangGraph checkpointing with PostgreSQL?",
+    ),
+    (
+        "03_sqlite_query",
+        "When should I use SqliteCheckpointer instead of PostgresCheckpointer?",
+    ),
+    (
+        "04_unrelated_query",
+        "How do I bake sourdough bread?",
+    ),
+]
+
+
+def submit_and_capture(page, task_text: str, out_path: Path) -> None:
+    """Type the task into the textarea, click Submit, wait for the answer, screenshot."""
+    page.wait_for_selector("textarea", timeout=10_000)
+    textarea = page.locator("textarea").first
+    textarea.click()
+    # Clear via select-all + delete (Streamlit text_area can hold multiline)
+    textarea.press("ControlOrMeta+A")
+    textarea.press("Delete")
+    textarea.fill(task_text)
+    page.wait_for_timeout(400)
+
+    submit = page.get_by_role("button", name="Submit")
+    submit.scroll_into_view_if_needed()
+    submit.click()
+
+    # Wait for the run row to appear with a non-empty Answer section.
+    page.wait_for_selector("h3:has-text('Answer')", timeout=20_000)
+    page.wait_for_timeout(2000)  # let the answer render
+    page.screenshot(path=str(out_path), full_page=True)
+    print(f"  saved: {out_path.relative_to(OUT_DIR.parent.parent)}")
+
+
 def main() -> None:
     with sync_playwright() as pw:
-        # Use the system Chrome (Google Chrome.app) so we don't depend on
-        # playwright's bundled chromium download succeeding.
+        # --no-sandbox is needed when running as root (some CI images). Opt-in
+        # via env var; default is the safer Chrome sandbox.
+        args = ["--disable-dev-shm-usage"]
+        if os.environ.get("AGENTOPS_SCREENSHOT_NO_SANDBOX") == "1":
+            args.append("--no-sandbox")
+        # channel="chrome" uses the system Chrome at /Applications/Google Chrome.app
+        # (macOS), /usr/bin/google-chrome (Linux), or the Chrome install on
+        # Windows. An ephemeral profile is created per launch so we never
+        # collide with the user's logged-in session.
         browser = pw.chromium.launch(
             channel="chrome",
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            args=args,
         )
         ctx = browser.new_context(viewport={"width": 1280, "height": 1100}, device_scale_factor=2)
         page = ctx.new_page()
-        page.goto(STREAMLIT_URL, wait_until="networkidle", timeout=30_000)
 
-        # 1) Landing page (default task pre-loaded in the text area).
+        # 1) Landing page.
+        page.goto(STREAMLIT_URL, wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_selector("textarea", timeout=10_000)
-        page.wait_for_timeout(1500)  # let streamlit settle
-        landing = OUT_DIR / "01_landing.png"
-        page.screenshot(path=str(landing), full_page=True)
-        print(f"  saved: {landing.relative_to(OUT_DIR.parent.parent)}")
-
-        # 2) Click Submit and capture the result panel.
-        submit = page.get_by_role("button", name="Submit")
-        submit.scroll_into_view_if_needed()
-        submit.click()
-
-        # Wait for the Answer markdown to appear.
-        page.wait_for_selector("h3:has-text('Answer')", timeout=20_000)
         page.wait_for_timeout(1500)
-        result = OUT_DIR / "02_after_submit.png"
-        page.screenshot(path=str(result), full_page=True)
-        print(f"  saved: {result.relative_to(OUT_DIR.parent.parent)}")
+        page.screenshot(path=str(OUT_DIR / "01_landing.png"), full_page=True)
+        print(f"  saved: docs/screenshots/01_landing.png")
+
+        # 2-4) Each scenario: re-load the page fresh, submit, screenshot.
+        for stem, task in SCENARIOS:
+            page.goto(STREAMLIT_URL, wait_until="domcontentloaded", timeout=30_000)
+            page.wait_for_selector("textarea", timeout=10_000)
+            page.wait_for_timeout(800)
+            submit_and_capture(page, task, OUT_DIR / f"{stem}.png")
+
+        browser.close()
+
+    # 5) The /_debug/retrieve endpoint — not a browser screenshot, but a
+    # machine-readable capture of the exact JSON the API returns for the
+    # default task. Render it as a styled HTML page and screenshot that.
+    with sync_playwright() as pw:
+        # --no-sandbox is needed when running as root (some CI images). Opt-in
+        # via env var; default is the safer Chrome sandbox.
+        args = ["--disable-dev-shm-usage"]
+        if os.environ.get("AGENTOPS_SCREENSHOT_NO_SANDBOX") == "1":
+            args.append("--no-sandbox")
+        # channel="chrome" uses the system Chrome at /Applications/Google Chrome.app
+        # (macOS), /usr/bin/google-chrome (Linux), or the Chrome install on
+        # Windows. An ephemeral profile is created per launch so we never
+        # collide with the user's logged-in session.
+        browser = pw.chromium.launch(
+            channel="chrome",
+            headless=True,
+            args=args,
+        )
+        ctx = browser.new_context(viewport={"width": 1280, "height": 1100}, device_scale_factor=2)
+        page = ctx.new_page()
+
+        task = "How do I configure LangGraph checkpointing with PostgreSQL?"
+        with urllib.request.urlopen(
+            f"{API_BASE}/_debug/retrieve?task={urllib.parse.quote(task)}", timeout=10
+        ) as resp:
+            payload = json.loads(resp.read())
+
+        html = f"""<!doctype html>
+<html><head><meta charset='utf-8'><title>Debug retrieve</title>
+<style>
+  body {{ font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+          background: #f6f7f9; margin: 0; padding: 32px; color: #1f2937; }}
+  h1 {{ font-size: 22px; margin: 0 0 16px; }}
+  pre {{ background: #fff; border: 1px solid #d1d5db; border-radius: 8px;
+         padding: 18px; font-size: 13px; line-height: 1.5; overflow: auto;
+         white-space: pre-wrap; word-wrap: break-word; }}
+  .matched {{ color: #047857; font-weight: 600; }}
+  .unmatched {{ color: #b91c1c; font-weight: 600; }}
+  .doc {{ margin: 6px 0; }}
+  .stem {{ color: #6b21a8; font-weight: 600; }}
+</style></head>
+<body>
+<h1>GET /_debug/retrieve?task={urllib.parse.quote(task)}</h1>
+<pre>{json.dumps(payload, indent=2)}</pre>
+</body></html>"""
+        page.set_content(html)
+        page.wait_for_load_state("networkidle", timeout=10_000)
+        page.wait_for_timeout(500)
+        page.screenshot(path=str(OUT_DIR / "05_debug_endpoint.png"), full_page=True)
+        print(f"  saved: docs/screenshots/05_debug_endpoint.png")
 
         browser.close()
 
