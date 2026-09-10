@@ -1,7 +1,11 @@
 """Runtime settings — driven by env vars; .env is gitignored."""
 from __future__ import annotations
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_INSECURE_JWT_SECRETS = {"", "dev-only-please-rotate"}
+_ALLOWED_JWT_ALGORITHMS = {"HS256", "HS384", "HS512"}
 
 
 class Settings(BaseSettings):
@@ -41,6 +45,25 @@ class Settings(BaseSettings):
 
     # Auth: principal for local dev
     dev_principal_id: str = "dev-user"
+
+    @model_validator(mode="after")
+    def _guard_jwt_algorithm(self) -> Settings:
+        """Reject alg=none / unknown JWT algorithms (token-forgery guard)."""
+        if self.jwt_algorithm not in _ALLOWED_JWT_ALGORITHMS:
+            raise ValueError(
+                f"AGENTOPS_JWT_ALGORITHM must be one of {sorted(_ALLOWED_JWT_ALGORITHMS)}; "
+                f"got {self.jwt_algorithm!r}."
+            )
+        return self
+
+    def has_insecure_jwt_secret(self) -> bool:
+        """True when the JWT secret is the dev default, empty, or too short.
+
+        The API server refuses to start in this state unless
+        provider == "local-fake" (the offline CI / unit-test path, ADR-0003
+        — no network, no real principals). See api.server:_lifespan.
+        """
+        return self.jwt_secret in _INSECURE_JWT_SECRETS or len(self.jwt_secret) < 32
 
 
 _settings: Settings | None = None

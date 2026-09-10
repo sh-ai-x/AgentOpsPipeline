@@ -15,6 +15,8 @@ import logging
 import os
 import secrets
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -33,7 +35,21 @@ from ..settings import get_settings
 
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="AgentOps Workbench API", version="0.2.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Refuse to serve with a forgeable JWT secret outside the fake provider."""
+    settings = get_settings()
+    if settings.has_insecure_jwt_secret() and settings.provider != "local-fake":
+        raise RuntimeError(
+            "AGENTOPS_JWT_SECRET is the dev default or shorter than 32 chars while "
+            f"provider={settings.provider!r}. Set a strong secret before starting the "
+            "API: python -c 'import secrets; print(secrets.token_urlsafe(48))'"
+        )
+    yield
+
+
+app = FastAPI(title="AgentOps Workbench API", version="0.2.0", lifespan=_lifespan)
 
 # Single ledger instance per process. Step 6 wires DI properly.
 _ledger: TicketLedger | None = None
@@ -75,7 +91,10 @@ class CancelResult(BaseModel):
 class ApproveBody(BaseModel):
     tool_name: str
     args: dict[str, Any]
-    approved_by: str
+    # Accepted for backward compatibility but ignored: the approver is
+    # bound to the authenticated JWT principal, never a client-supplied
+    # string (that was approver impersonation).
+    approved_by: str | None = None
 
 
 class ApproveResult(BaseModel):
@@ -163,17 +182,13 @@ def _execute_run(run_id: str) -> None:
                     run.state = RunState.FAILED.value
                     run.error = f"graph_error: {exc}"
             return
+        usage = adapter.last_usage
         with session_scope() as s:
             run = s.get(Run, run_id)
             if run is None:
                 return
             run.answer = out.answer
             run.state = out.state.value
-            # Persist LLM usage so /v1/runs/{run_id} surfaces tokens + cost.
-            # LocalFakeAdapter sets `_last_usage` on every chat(); real adapters
-            # should set it too. Without this, the Run row stays at the
-            # column defaults (0 / 0.0) and the API returns zeros forever.
-            usage = getattr(adapter, "_last_usage", None)
             if usage is not None:
                 run.total_tokens = usage.total_tokens
                 run.cost_usd = usage.cost_usd
@@ -241,7 +256,7 @@ def create_action(body: ApproveBody, run_id: str, principal_id: str = Depends(re
             args_canonical=body.args,
             nonce=nonce,
             expires_at=expires_at,
-            approved_by=body.approved_by,
+            approved_by=principal_id,
         )
         s.add(action)
     return ApproveResult(action_id=action_id, nonce=nonce, expires_at=expires_at.isoformat())
