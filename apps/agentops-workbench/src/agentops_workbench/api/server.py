@@ -169,6 +169,14 @@ def _execute_run(run_id: str) -> None:
                 return
             run.answer = out.answer
             run.state = out.state.value
+            # Persist LLM usage so /v1/runs/{run_id} surfaces tokens + cost.
+            # LocalFakeAdapter sets `_last_usage` on every chat(); real adapters
+            # should set it too. Without this, the Run row stays at the
+            # column defaults (0 / 0.0) and the API returns zeros forever.
+            usage = getattr(adapter, "_last_usage", None)
+            if usage is not None:
+                run.total_tokens = usage.total_tokens
+                run.cost_usd = usage.cost_usd
     finally:
         adapter.close()
 
