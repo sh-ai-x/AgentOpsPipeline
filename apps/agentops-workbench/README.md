@@ -27,12 +27,37 @@ AGENTOPS_PROVIDER=minimax uv run streamlit run streamlit_app/app.py
 
 ## Live provider setup
 
-`provider=minimax` is the default for live experiments. A working
+`provider=local-fake` is the dev default; `provider=minimax` is the live default for live experiments. A working
 `MINIMAX_API_KEY` lives at `/Users/sanghee/dev/dev-harness-kit/.env`
 (variable name `MINIMAX_API_KEY`). Copy that value into this app's
 `.env` (gitignored). CI uses `provider=local-fake` and needs no key.
 
 **Never commit a populated `.env`.**
+
+## Screenshots
+
+The Streamlit UI is the primary operator surface. Both screenshots are
+captured via `scripts/screenshot_streamlit.py` (Playwright driving the
+system Chrome via channel=`chrome`; no playwright-bundled browser
+download required).
+
+| Step | Capture |
+|------|---------|
+| Operator opens the UI; default task is pre-loaded; the dev-token path auto-mints for `provider=local-fake` | ![Streamlit landing](docs/screenshots/01_landing.png) |
+| After clicking **Submit**, the run panel shows state/tokens/cost/tool-calls and the synthesized answer that quotes doc-001 + doc-002 from the corpus | ![Streamlit after submit](docs/screenshots/02_after_submit.png) |
+
+To regenerate after a UI change:
+
+```bash
+# 1) Make sure both servers are up:
+AGENTOPS_JWT_SECRET="<strong-32+>" AGENTOPS_ALLOW_DEV_TOKEN=1 \
+  uv run uvicorn agentops_workbench.api.server:app --port 8000 &
+AGENTOPS_JWT_SECRET="<strong-32+>" AGENTOPS_ALLOW_DEV_TOKEN=1 \
+  uv run streamlit run streamlit_app/app.py &
+
+# 2) Drive headless Chrome and write the new PNGs into docs/screenshots/:
+uv run python scripts/screenshot_streamlit.py
+```
 
 ## Architecture
 
@@ -102,7 +127,7 @@ docker/
 ## Tests
 
 ```bash
-uv run pytest -q     # 137 tests
+uv run pytest -q     # 154 tests
 uv run ruff check .  # clean
 ```
 
