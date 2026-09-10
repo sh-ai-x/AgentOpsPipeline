@@ -25,6 +25,13 @@
 - JWT secret startup guard + alg allowlist added in PR #8 (review critical)
 - **Gaps (see `step2-output.json`):** `_classify` is a keyword heuristic and never returns `clarify`; the run path issues no tool calls, so "failed tool is visible" is unimplemented; `/v1/actions` mints a nonce but never calls `TicketLedger.publish()`, so run → draft → approve → publish is not connected
 
+**Post-launch patches** (since PR #8):
+- PR #10: every `LLMAdapter` now populates `Usage.total_tokens`/`prompt_tokens`/`completion_tokens`/`cost_usd` (`_last_usage` field); `_execute_run` writes those onto the `Run` row so `/v1/runs/{id}` surfaces real metrics instead of zeros.
+- PR #10: `_retrieve_docs` normalizes tokens (regex split, lowercase, common-stopword filter, 6-char prefix fallback for tokens ≥ 7 chars) — `checkpointing` matches `checkpointer`, `postgresql` matches `postgrescheckpointer`.
+- PR #12: `LocalFakeAdapter.chat()` picks a scripted response by keyword routing (`langgraph`+`checkpoint` → PostgresCheckpointer; `postgres`+`sqlite` → comparison). `fixtures/llm/scripts/default.jsonl` still consulted for unrelated queries.
+- PR #12: new `GET /_debug/retrieve?task=<text>` web-debug surface — returns the doc stems + snippets the fixed graph would surface, no auth required (dev-only).
+- PR #14: `LocalFakeAdapter.chat()` parses the `Retrieved docs:` block out of the prompt, composes a structured answer (intro + cited stem + quoted passage + 'see also' for supporting docs + source attribution) so the dev output reads like a real LLM answer, not a hardcoded line.
+
 ## Cross-references
 
 - Source proposal: [`../../docs/proposals/agentops-workbench-proposal.md`](../../docs/proposals/agentops-workbench-proposal.md)

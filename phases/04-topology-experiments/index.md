@@ -23,6 +23,8 @@
 - Held-out run notes: `single_agent` burned 2-10x completion tokens vs `fixed` for no measured gain
 - **Gap (see `step5-output.json`):** tool dispatch is `# stub for MVP` in *both* `single_agent` and `planner_executor`; `tool_correctness` is 0/24 on the held-out set, so the matched-budget comparison behind ADR-0006 is between three tool-less answer generators. `planner_executor` was not in the held-out run.
 
+**Post-launch patches**: none since PR #8. Topology registry is unchanged; `fixed` remains the default per ADR-0006. **Follow-up still open**: `single_agent` and `planner_executor` are tool-less — they walk the plan steps but cannot call MCP tools because the document MCP server isn't wired into the graph runtime. `tool_calls` metric stays at 0 regardless of which topology you pick (see `/dev-kit:review` caveats on `/_debug/metrics`).
+
 ## Cross-references
 
 - Source proposal: [`../../docs/proposals/agentops-workbench-proposal.md`](../../docs/proposals/agentops-workbench-proposal.md)

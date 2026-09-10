@@ -25,6 +25,8 @@
 - Negative test: path outside `fixtures/docs/` returns `permission_denied`
 - `approved_by` derived from the JWT (PR #8, finding F01)
 
+**Post-launch patches**: none since PR #8 — the MCP document server is unchanged (still the 2 tools `search_docs` / `read_document`); `approved_by` derivation unchanged.
+
 ## Cross-references
 
 - Source proposal: [`../../docs/proposals/agentops-workbench-proposal.md`](../../docs/proposals/agentops-workbench-proposal.md)
