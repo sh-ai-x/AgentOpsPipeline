@@ -16,6 +16,18 @@ integrations, an MCP document server and a pinned filesystem server.
 
 ---
 
+## Screenshot
+
+The Streamlit operator UI after submitting the default query — run `succeeded`,
+415 tokens, and a synthesized answer that quotes `doc-001` from the corpus.
+Note **tool calls: 0** — the agent retrieves and answers but never calls a tool
+(see [the central gap](#the-central-gap)). Full gallery (6 shots) in the app
+README: [`apps/agentops-workbench/README.md#screenshots`](apps/agentops-workbench/README.md#screenshots).
+
+![AgentOps Workbench — Streamlit UI after a run](apps/agentops-workbench/docs/screenshots/02_after_submit.png)
+
+---
+
 ## Progress
 
 ### Build phases
