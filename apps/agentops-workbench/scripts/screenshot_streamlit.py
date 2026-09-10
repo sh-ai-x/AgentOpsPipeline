@@ -13,6 +13,7 @@ Captures:
     docs/screenshots/03_sqlite_query.png       — SQLite vs Postgres comparison query
     docs/screenshots/04_unrelated_query.png    — Off-topic query (refusal path)
     docs/screenshots/05_debug_endpoint.png     — /_debug/retrieve JSON response
+    docs/screenshots/06_metrics_endpoint.png   — /_debug/metrics live dashboard
 
 Notes:
 - Set AGENTOPS_SCREENSHOT_NO_SANDBOX=1 only when running as root
@@ -138,7 +139,13 @@ def main() -> None:
         ) as resp:
             payload = json.loads(resp.read())
 
-        html = f"""<!doctype html>
+        # 5a) Fetch /_debug/metrics JSON so the screenshot reflects live data.
+        with urllib.request.urlopen(
+            f"{API_BASE}/_debug/metrics", timeout=10
+        ) as resp:
+            metrics_payload = json.loads(resp.read())
+
+        retrieve_html = f"""<!doctype html>
 <html><head><meta charset='utf-8'><title>Debug retrieve</title>
 <style>
   body {{ font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
@@ -156,11 +163,57 @@ def main() -> None:
 <h1>GET /_debug/retrieve?task={urllib.parse.quote(task)}</h1>
 <pre>{json.dumps(payload, indent=2)}</pre>
 </body></html>"""
-        page.set_content(html)
-        page.wait_for_load_state("networkidle", timeout=10_000)
+        page.set_content(retrieve_html)
+        page.wait_for_load_state("domcontentloaded", timeout=10_000)
         page.wait_for_timeout(500)
         page.screenshot(path=str(OUT_DIR / "05_debug_endpoint.png"), full_page=True)
         print(f"  saved: docs/screenshots/05_debug_endpoint.png")
+
+        browser.close()
+
+    # 6) /_debug/metrics page -- live, JSON-formatted, web-debuggable.
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            channel="chrome",
+            headless=True,
+            args=["--disable-dev-shm-usage"],
+        )
+        ctx = browser.new_context(viewport={"width": 1280, "height": 1100}, device_scale_factor=2)
+        page = ctx.new_page()
+
+        with urllib.request.urlopen(f"{API_BASE}/_debug/metrics", timeout=10) as resp:
+            metrics_payload = json.loads(resp.read())
+
+        metrics_html = f"""<!doctype html>
+<html><head><meta charset='utf-8'><title>Debug metrics</title>
+<style>
+  body {{ font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+          background: #f6f7f9; margin: 0; padding: 32px; color: #1f2937; }}
+  h1 {{ font-size: 22px; margin: 0 0 8px; }}
+  h2 {{ font-size: 16px; margin: 20px 0 6px; color: #4338ca; }}
+  pre {{ background: #fff; border: 1px solid #d1d5db; border-radius: 8px;
+         padding: 18px; font-size: 13px; line-height: 1.5; overflow: auto;
+         white-space: pre-wrap; word-wrap: break-word; }}
+  .caveat {{ background: #fef3c7; border-color: #f59e0b;
+             padding: 12px 16px; border-radius: 6px; margin-top: 8px;
+             font-size: 12px; line-height: 1.5; }}
+</style></head>
+<body>
+<h1>GET /_debug/metrics</h1>
+<p style='color:#6b7280;font-size:12px;margin:0 0 16px'>Live, recomputed on every request. Pass <code>AGENTOPS_PRICING_JSON</code> to override MODEL_PRICING.</p>
+<pre>{json.dumps(metrics_payload, indent=2)}</pre>
+
+<h2>Why is cost_usd 0?</h2>
+<div class='caveat'>{metrics_payload["caveats"]["cost_usd"]}</div>
+
+<h2>Why is tool_calls 0?</h2>
+<div class='caveat'>{metrics_payload["caveats"]["tool_calls"]}</div>
+</body></html>"""
+        page.set_content(metrics_html)
+        page.wait_for_load_state("domcontentloaded", timeout=10_000)
+        page.wait_for_timeout(500)
+        page.screenshot(path=str(OUT_DIR / "06_metrics_endpoint.png"), full_page=True)
+        print(f"  saved: docs/screenshots/06_metrics_endpoint.png")
 
         browser.close()
 

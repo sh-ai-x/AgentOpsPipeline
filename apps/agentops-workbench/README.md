@@ -54,6 +54,7 @@ download required).
 | SqliteCheckpointer vs PostgresCheckpointer query — different retrieval ranking + comparison-table answer from doc-002 | ![Streamlit sqlite query](docs/screenshots/03_sqlite_query.png) |
 | Off-topic query ("How do I bake sourdough bread?") — server-side refusal path with `_REFUSE_MESSAGE` | ![Streamlit unrelated query](docs/screenshots/04_unrelated_query.png) |
 | `/_debug/retrieve?task=...` JSON output — web-debug surface to inspect what the agent would surface BEFORE running a full `/v1/runs` cycle | ![Debug endpoint](docs/screenshots/05_debug_endpoint.png) |
+| `/_debug/metrics` JSON — live, recomputed on every request. Reports test count, DB ledger (runs / tool_calls / actions), screenshot bytes, diff-vs-main, and cost. Two caveats surface why `cost_usd` and `tool_calls` are 0 for the current default graph | ![Debug metrics](docs/screenshots/06_metrics_endpoint.png) |
 
 To regenerate after a UI change:
 
@@ -68,6 +69,42 @@ AGENTOPS_JWT_SECRET="$JWT" AGENTOPS_ALLOW_DEV_TOKEN=1 \
 uv sync --extra dev
 uv run python scripts/screenshot_streamlit.py
 ```
+
+## Metrics
+
+Live, web-debuggable metrics for the workbench app:
+
+```bash
+curl http://127.0.0.1:8000/_debug/metrics
+```
+
+Returns (recomputed on every request):
+
+```json
+{
+  "test_count": 154,
+  "db_stats": {"runs": 47, "tool_calls": 0, "actions": 16},
+  "screenshots": {"count": 5, "bytes_total": 928525},
+  "line_diff_vs_main": {"added": 250, "removed": 5},
+  "settings": {"provider": "minimax", "model": "MiniMax-M3"},
+  "recent_cost_usd": 0.0,
+  "caveats": {
+    "cost_usd": "Local-fake always returns 0.0 (fixture is free). For minimax/openai/anthropic, cost is computed locally...",
+    "tool_calls": "Default graph (fixed-v1) does not invoke MCP tools — its only call is an in-process lexical retrieval function..."
+  }
+}
+```
+
+**Cost model**: `prompt_tokens/1M × input_per_1m + completion_tokens/1M × output_per_1m` per call, using
+`src/agentops_workbench/llm/pricing.py::MODEL_PRICING` (default `MiniMax-M3 = $0.50/$1.50 per 1M`). Override per-deployment via:
+
+```bash
+export AGENTOPS_PRICING_JSON='{"my-fine-tune":{"input_per_1m":1.20,"output_per_1m":3.40}}'
+```
+
+**Tool calls**: the default `fixed-v1` graph does NOT make MCP tool calls — its only call is an in-process lexical retrieval. The `planner-executor-v1` graph walks `search_docs` / `read_document` / `get_issue` but requires the MCP document server to be running; without it, `tool_calls` stays at 0. By design.
+
+**CLI equivalent**: `uv run python scripts/print_metrics.py` prints the same numbers from the CLI.
 
 ## Architecture
 

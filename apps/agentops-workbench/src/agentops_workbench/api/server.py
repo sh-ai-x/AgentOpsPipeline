@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from pathlib import Path
 import secrets
 import uuid
 from collections.abc import AsyncIterator
@@ -257,6 +258,124 @@ def debug_retrieve(task: str) -> dict:
         "matched": not no_match,
         "doc_count": len(docs),
         "docs": docs,
+    }
+
+
+@app.get("/_debug/metrics", response_model=dict)
+def debug_metrics() -> dict:
+    """Live, measurable state of the workbench app.
+
+    Web-debuggable surface so the operator can see what's happening
+    without a CLI. Returns:
+      - test_count: pytest tests collected
+      - db_stats: {runs, tool_calls, actions} from the local SQLite ledger
+      - screenshots: {count, bytes_total} for docs/screenshots/*.png
+      - line_diff_vs_main: (+added, -removed) under apps/agentops-workbench/
+      - settings: {provider, model} (sanitized)
+
+    Cheap to call; recomputes on each request so the values stay live.
+    """
+    import sqlite3
+    import subprocess
+
+    workbench = Path(__file__).resolve().parent.parent.parent.parent
+    repo_root = workbench.parent.parent
+    db_path = workbench / "agentops.db"
+    screenshot_dir = workbench / "docs" / "screenshots"
+
+    # Test count via pytest --collect-only
+    test_n = -1
+    try:
+        out = subprocess.run(
+            ["uv", "run", "pytest", "--collect-only", "-q"],
+            cwd=str(workbench), check=False, capture_output=True, text=True, timeout=60,
+        ).stdout
+        for line in out.splitlines():
+            if "tests collected" in line or "test collected" in line:
+                test_n = int(line.split()[0].replace("tests", "").replace("test", "").strip())
+                break
+    except Exception:
+        pass
+
+    # DB stats
+    db_stats = {"runs": 0, "tool_calls": 0, "actions": 0}
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            for label, table in (("runs", "runs"), ("tool_calls", "tool_calls"), ("actions", "actions")):
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    db_stats[label] = cur.fetchone()[0]
+                except sqlite3.OperationalError:
+                    pass
+            conn.close()
+        except Exception:
+            pass
+
+    # Screenshots
+    sc_count = 0
+    sc_bytes = 0
+    if screenshot_dir.exists():
+        for p in screenshot_dir.glob("*.png"):
+            sc_count += 1
+            sc_bytes += p.stat().st_size
+
+    # Line diff vs origin/main
+    add = rem = 0
+    try:
+        diff_out = subprocess.run(
+            ["git", "diff", "--numstat", "origin/main...HEAD", "--", "apps/agentops-workbench/"],
+            cwd=str(repo_root), check=False, capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        for line in diff_out.splitlines():
+            a, r, _ = line.split("\t", 2)
+            if a == "-":
+                continue
+            add += int(a); rem += int(r)
+    except Exception:
+        pass
+
+    # Latest-run cost (most recent run's total cost from the DB).
+    recent_cost_usd = 0.0
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute("SELECT cost_usd FROM runs WHERE cost_usd > 0 ORDER BY rowid DESC LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                recent_cost_usd = float(row[0])
+            conn.close()
+        except Exception:
+            pass
+
+    return {
+        "test_count": test_n,
+        "db_stats": db_stats,
+        "screenshots": {"count": sc_count, "bytes_total": sc_bytes},
+        "line_diff_vs_main": {"added": add, "removed": rem},
+        "settings": {
+            "provider": get_settings().provider,
+            "model": get_settings().model,
+        },
+        "recent_cost_usd": recent_cost_usd,
+        "caveats": {
+            "cost_usd": (
+                "Local-fake always returns 0.0 (fixture is free). For minimax/openai/anthropic, "
+                "cost is computed locally as prompt_tokens/1M * input_per_1m + "
+                "completion_tokens/1M * output_per_1m; edit "
+                "src/agentops_workbench/llm/pricing.py MODEL_PRICING or set "
+                "AGENTOPS_PRICING_JSON env var to override."
+            ),
+            "tool_calls": (
+                "Default graph (fixed-v1) does not invoke MCP tools — its only call is "
+                "an in-process lexical retrieval function (not recorded as a tool call). "
+                "The planner-executor graph walks search_docs/read_document/get_issue "
+                "but requires the MCP document server to be running; without it, "
+                "tool_calls stays at 0. This is by-design, not a bug."
+            ),
+        },
     }
 
 
