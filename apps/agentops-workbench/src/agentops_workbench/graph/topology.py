@@ -27,6 +27,7 @@ def planner_executor(adapter: LLMAdapter, task: str) -> dict[str, Any]:
         "answer": out.answer,
         "plan": out.plan,
         "steps_executed": out.steps_executed,
+        "tool_results": out.tool_results,
     }
 
 
