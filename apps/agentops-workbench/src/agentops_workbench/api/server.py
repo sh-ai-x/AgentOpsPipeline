@@ -11,9 +11,9 @@ Auth: HS256 JWT (dev secret in .env). principal_id from the `sub` claim.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
-from pathlib import Path
 import secrets
 import uuid
 from collections.abc import AsyncIterator
@@ -27,10 +27,10 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from .. import dev_metrics
-from ..db.models import Action, Run
+from ..db.models import Action, Run, ToolCall
 from ..db.session import session_scope
-from ..graph.fixed import run_fixed_graph
-from ..graph.state import RunState
+from ..graph.state import RunState, make_action_key
+from ..graph.topology import run_topology
 from ..llm.factory import make_adapter
 from ..mocks.tickets import TicketLedger
 from ..settings import get_settings
@@ -73,6 +73,15 @@ class CreateRunBody(BaseModel):
     prompt_version: str = "v1_baseline"
     model_config: dict[str, Any] = {}
     budget: dict[str, Any] = {}
+
+
+# Maps the API-facing graph_version string to a topology.TOPOLOGIES key.
+# README documents these three graph_version strings; keep both in sync.
+GRAPH_VERSION_TO_TOPOLOGY: dict[str, str] = {
+    "fixed-v1": "fixed",
+    "single-agent-v1": "single_agent",
+    "planner-executor-v1": "planner_executor",
+}
 
 
 class RunView(BaseModel):
@@ -141,6 +150,14 @@ def require_principal(authorization: str | None = Header(None)) -> str:
 
 @app.post("/v1/runs", response_model=RunView, status_code=status.HTTP_201_CREATED)
 def create_run(body: CreateRunBody, principal_id: str = Depends(require_principal)) -> RunView:
+    if body.graph_version not in GRAPH_VERSION_TO_TOPOLOGY:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"unknown graph_version: {body.graph_version!r}. "
+                f"Supported: {sorted(GRAPH_VERSION_TO_TOPOLOGY)}"
+            ),
+        )
     run_id = uuid.uuid4().hex[:32]
     code_sha = os.environ.get("AGENTOPS_CODE_SHA", "dev-sha")
     with session_scope() as s:
@@ -163,6 +180,42 @@ def create_run(body: CreateRunBody, principal_id: str = Depends(require_principa
     return get_run(run_id, principal_id)
 
 
+def _persist_tool_calls(session, run_id: str, tool_results: list[dict[str, Any]]) -> None:
+    """One ToolCall row per executed planner_executor step.
+
+    fixed/single_agent never produce tool_results, so this is a no-op for
+    them -- their tool_calls count stays 0, by design. action_key reuses
+    the existing state.make_action_key() dedup helper (run_id, tool_name,
+    canonical-hash(args)); args_canonical is the canonical JSON string of
+    the args dict, mirroring mocks.tickets.TicketLedger.canonicalize().
+    """
+    for idx, entry in enumerate(tool_results):
+        tool_name = entry["tool_name"]
+        args = {"tool_name": tool_name, "step_index": idx}
+        args_canonical = json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)
+        action_key = make_action_key(run_id, tool_name, args)
+        outcome_payload: dict[str, Any] = {"status": entry["outcome"]}
+        if entry.get("error_kind"):
+            outcome_payload["error_kind"] = entry["error_kind"]
+        session.add(
+            ToolCall(
+                id=uuid.uuid4().hex[:32],
+                run_id=run_id,
+                tool_name=tool_name,
+                # No approval gate applies to read-only retrieval tools
+                # (search_docs/read_document/get_issue); only
+                # create_ticket_draft/publish_ticket go through
+                # POST /v1/actions. "auto" records that this call was
+                # dispatched without a human-in-the-loop approval step.
+                policy_decision="auto",
+                action_key=action_key,
+                args_canonical=args_canonical,
+                outcome=outcome_payload,
+                latency_ms=entry.get("latency_ms", 0),
+            )
+        )
+
+
 def _execute_run(run_id: str) -> None:
     settings = get_settings()
     adapter = make_adapter(settings)
@@ -172,10 +225,21 @@ def _execute_run(run_id: str) -> None:
             if run is None:
                 return
             task = run.task
+            graph_version = run.graph_version
             run.state = RunState.RUNNING.value
-        # execute graph (synchronous; bounded by max_steps default 8)
+
+        topology_name = GRAPH_VERSION_TO_TOPOLOGY.get(graph_version)
+        if topology_name is None:  # pragma: no cover - guarded at create_run time
+            with session_scope() as s:
+                run = s.get(Run, run_id)
+                if run is not None:
+                    run.state = RunState.FAILED.value
+                    run.error = f"unknown graph_version: {graph_version!r}"
+            return
+
+        # execute graph (synchronous; bounded by each topology's own step budget)
         try:
-            out = run_fixed_graph(adapter, task)
+            result = run_topology(topology_name, adapter, task)
         except Exception as exc:  # pragma: no cover - exercised via test_failure
             log.exception("graph execution failed")
             with session_scope() as s:
@@ -185,15 +249,18 @@ def _execute_run(run_id: str) -> None:
                     run.error = f"graph_error: {exc}"
             return
         usage = adapter.last_usage
+        tool_results = result.get("tool_results", [])
         with session_scope() as s:
             run = s.get(Run, run_id)
             if run is None:
                 return
-            run.answer = out.answer
-            run.state = out.state.value
+            run.answer = result["answer"]
+            state_val = result["state"]
+            run.state = state_val.value if isinstance(state_val, RunState) else state_val
             if usage is not None:
                 run.total_tokens = usage.total_tokens
                 run.cost_usd = usage.cost_usd
+            _persist_tool_calls(s, run_id, tool_results)
     finally:
         adapter.close()
 
@@ -300,11 +367,20 @@ def debug_metrics() -> dict:
                 "AGENTOPS_PRICING_JSON env var to override. Unknown models return 0.0."
             ),
             "tool_calls": (
-                "Default graph (fixed-v1) does not invoke MCP tools — its only call is "
-                "an in-process lexical retrieval function (not recorded as a tool call). "
-                "The planner-executor graph walks search_docs/read_document/get_issue "
-                "but requires the MCP document server to be running; without it, "
-                "tool_calls stays at 0. This is by-design, not a bug."
+                "fixed-v1 and single-agent-v1 never make MCP tool calls: fixed-v1's only "
+                "call is an in-process lexical retrieval function (not recorded as a tool "
+                "call), and single-agent-v1's TOOL branch is still a stub. tool_calls "
+                "stays at 0 for both, by design. planner-executor-v1 executes its plan "
+                "against a real DocumentClient (InMemoryDocumentClient, reading "
+                "fixtures/docs/*.md) and persists one ToolCall row per executed step: "
+                "search_docs/read_document record outcome.status='ok' with real "
+                "fixture-corpus results; get_issue has no real backend anywhere in this "
+                "repo and always records outcome.status='error' with "
+                "outcome.error_kind='unsupported_capability'. With provider=local-fake "
+                "(the CI default) the planner LLM cannot produce a parseable plan, so "
+                "planner-executor-v1 still short-circuits to 0 tool_calls under CI; a "
+                "live provider (minimax/openai/anthropic) that emits a real plan "
+                "produces non-zero tool_calls."
             ),
         },
     }

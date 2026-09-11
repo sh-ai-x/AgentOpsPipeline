@@ -91,3 +91,13 @@ def test_all_topologies_terminate(topology: str) -> None:
     out = run_topology(topology, a, "How do I configure LangGraph checkpointing with Postgres?")
     assert out["state"] in {RunState.SUCCEEDED.value, RunState.FAILED.value}
     assert out["answer"]
+
+
+# ---- tool_results surfaced through the topology registry ----
+
+
+def test_planner_executor_topology_surfaces_tool_results() -> None:
+    a = LocalFakeAdapter()
+    out = run_topology("planner_executor", a, "anything")
+    assert "tool_results" in out
+    assert isinstance(out["tool_results"], list)

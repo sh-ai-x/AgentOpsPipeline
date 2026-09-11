@@ -12,7 +12,6 @@ import subprocess
 import time
 from pathlib import Path
 
-
 _CACHE_TTL_SECONDS = 30.0
 _cache: dict[str, tuple[float, object]] = {}
 
@@ -98,10 +97,13 @@ def line_diff_vs_main() -> dict:
         a = r = 0
         for line in out.splitlines():
             parts = line.split(chr(9))
-            if len(parts) < 3: continue
+            if len(parts) < 3:
+                continue
             la, lr = parts[0], parts[1]
-            if la == "-" or lr == "-": continue
-            a += int(la); r += int(lr)
+            if la == "-" or lr == "-":
+                continue
+            a += int(la)
+            r += int(lr)
         return {"added": a, "removed": r}
     return _cached("line_diff_vs_main", _compute)
 

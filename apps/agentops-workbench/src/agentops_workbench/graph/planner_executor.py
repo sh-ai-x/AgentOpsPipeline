@@ -2,7 +2,11 @@
 
 Two-phase:
   - planner emits a 1-3 step plan (list of tool names)
-  - executor walks the plan with a per-step budget
+  - executor walks the plan with a per-step budget, dispatching each
+    step to a real DocumentClient call (search_docs / read_document).
+    get_issue has no real backend anywhere in this repo -- executing it
+    normalises to MCPError(kind="unsupported_capability") and the plan
+    continues (see docs/adr/0002-mcp-boundaries.md).
 
 Stop conditions:
   - plan complete
@@ -12,18 +16,21 @@ Stop conditions:
 Internally this is a real `langgraph.graph.StateGraph` with three nodes:
 `plan` (or `empty_plan` when the parser yields nothing), `execute`
 (looping via a conditional self-edge, budget-bounded), and `synthesize`
-— reproducing the original two-phase-plus-budget structure exactly.
+— reproducing the original two-phase-plus-budget structure exactly, with
+the real tool execution living inside the `execute` node's per-step logic.
 """
 from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
 from ..llm.adapter import LLMAdapter
+from ..mcp import DocRef, DocumentClient, InMemoryDocumentClient, MCPError, classify_mcp_error
 from .fixed import _CLARIFY_MESSAGE, _REFUSE_MESSAGE
 from .state import RunState
 
@@ -36,15 +43,26 @@ class PlannerExecutorOutput:
     answer: str
     plan: list[str]
     steps_executed: int
+    tool_results: list[dict]
 
 
 MAX_PLAN_STEPS = 3
 MAX_EXECUTOR_STEPS = 6
 
+# Snippet length folded into the final synthesis prompt per read_document
+# call. Generous enough to carry a real passage, bounded so the prompt
+# stays small.
+_CONTEXT_SNIPPET_CHARS = 800
+
 _PLAN_PROMPT = (
     "Plan how to answer this task using ONLY these tools: search_docs, read_document, "
     "get_issue. Reply with up to 3 steps, one per line, in the form `step: <tool_name>`.\n\n"
     "Task: {task}"
+)
+
+_SYNTH_PROMPT = (
+    "Using the plan and retrieved evidence below, answer the task.\n\n"
+    "Retrieved docs:\n{docs}\n\nTask: {task}\n"
 )
 
 
@@ -63,12 +81,70 @@ def _parse_plan(text: str) -> list[str]:
     return out
 
 
+def _resolve_read_doc_id(
+    task: str, last_search_results: list[DocRef], client: DocumentClient
+) -> str | None:
+    """doc_id to read: the top-ranked prior search_docs hit, or -- when the
+    plan never ran search_docs -- a fresh search over the task text itself.
+    """
+    if last_search_results:
+        return last_search_results[0].doc_id
+    fallback = client.search_docs(task, top_k=1)
+    return fallback[0].doc_id if fallback else None
+
+
+def _execute_step(
+    tool: str,
+    task: str,
+    client: DocumentClient,
+    last_search_results: list[DocRef],
+    context_docs: list[tuple[str, str]],
+) -> tuple[str, str | None, list[DocRef]]:
+    """Run one plan step against the real DocumentClient.
+
+    Returns (outcome, error_kind, updated last_search_results). Mutates
+    context_docs in place with any retrieved text so the caller can fold
+    it into the final synthesis prompt. Never raises -- every failure is
+    normalised via classify_mcp_error and reported through the return
+    value so the plan can continue.
+    """
+    try:
+        if tool == "search_docs":
+            last_search_results = client.search_docs(task)
+        elif tool == "read_document":
+            doc_id = _resolve_read_doc_id(task, last_search_results, client)
+            if doc_id is None:
+                raise ValueError("read_document: no candidate doc_id (search returned no hits)")
+            text = client.read_document(doc_id)
+            context_docs.append((doc_id, text[:_CONTEXT_SNIPPET_CHARS]))
+        elif tool == "get_issue":
+            # No real issue tracker backend exists anywhere in this repo
+            # (fixtures/cases/schema.json allows the tool name, but there
+            # is no mock or MCP server behind it). Normalise honestly
+            # instead of inventing fake issue data.
+            raise NotImplementedError(
+                "get_issue is not supported: no issue tracker backend is "
+                "configured in this environment"
+            )
+        else:
+            raise ValueError(f"unknown tool in plan: {tool!r}")
+    except Exception as exc:  # noqa: BLE001 - normalised via classify_mcp_error
+        mcp_err = exc if isinstance(exc, MCPError) else classify_mcp_error(exc)
+        log.info("planner_executor: tool=%s failed kind=%s", tool, mcp_err.kind)
+        return "error", mcp_err.kind, last_search_results
+    return "ok", None, last_search_results
+
+
 class _PlannerExecutorState(TypedDict, total=False):
     adapter: Any  # LLMAdapter — opaque to the graph, not serialized
+    document_client: Any  # DocumentClient — opaque to the graph, not serialized
     task: str
     plan: list[str]
     executed: int
     answer: str
+    tool_results: list[dict]
+    last_search_results: list[DocRef]
+    context_docs: list[tuple[str, str]]
 
 
 def _plan_node(state: _PlannerExecutorState) -> dict[str, Any]:
@@ -84,20 +160,54 @@ def _empty_plan_node(state: _PlannerExecutorState) -> dict[str, Any]:
 
 
 def _execute_node(state: _PlannerExecutorState) -> dict[str, Any]:
-    adapter = state["adapter"]
+    """Dispatch one plan step against the real DocumentClient.
+
+    Runs `_execute_step` (search_docs / read_document / get_issue) and
+    accumulates the result into `tool_results`, `last_search_results`, and
+    `context_docs` so the loop's later iterations and the final
+    `synthesize` node see everything retrieved so far.
+    """
+    task = state["task"]
+    client: DocumentClient = state["document_client"]
     plan = state["plan"]
     executed = state["executed"]
     tool = plan[executed]
-    # Tool execution is a stub for MVP; step 6 wires real MCP calls.
-    adapter.chat([{"role": "user", "content": f"execute: {tool}"}])
-    return {"executed": executed + 1}
+    last_search_results = state.get("last_search_results", [])
+    context_docs = list(state.get("context_docs", []))
+    tool_results = list(state.get("tool_results", []))
+
+    start = time.monotonic()
+    outcome, error_kind, last_search_results = _execute_step(
+        tool, task, client, last_search_results, context_docs
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+    tool_results.append(
+        {
+            "tool_name": tool,
+            "outcome": outcome,
+            "latency_ms": latency_ms,
+            "error_kind": error_kind,
+        }
+    )
+    return {
+        "executed": executed + 1,
+        "tool_results": tool_results,
+        "last_search_results": last_search_results,
+        "context_docs": context_docs,
+    }
 
 
 def _synthesize_node(state: _PlannerExecutorState) -> dict[str, Any]:
     adapter = state["adapter"]
     task = state["task"]
+    context_docs = state.get("context_docs", [])
+    docs_blob = (
+        "\n\n--\n\n".join(f"[{doc_id}]: {snippet}" for doc_id, snippet in context_docs)
+        if context_docs
+        else "(no relevant docs found)"
+    )
     synth_resp = adapter.chat(
-        [{"role": "user", "content": f"Using the plan above, answer the task. Task: {task}"}]
+        [{"role": "user", "content": _SYNTH_PROMPT.format(docs=docs_blob, task=task)}]
     )
     answer = (synth_resp.content or "").strip()
     if "REFUSE" in answer.upper()[:32]:
@@ -119,7 +229,8 @@ def _build_graph():
     """Build and compile the planner/executor graph's `StateGraph`.
 
     plan -> (empty_plan | execute) ; execute loops on itself
-    (budget-bounded) -> synthesize -> END.
+    (budget-bounded), dispatching a real DocumentClient tool call each
+    iteration, -> synthesize -> END.
     """
     graph = StateGraph(_PlannerExecutorState)
     graph.add_node("plan", _plan_node)
@@ -141,13 +252,23 @@ def _build_graph():
 _GRAPH = _build_graph()
 
 
-def run_planner_executor(adapter: LLMAdapter, task: str) -> PlannerExecutorOutput:
+def run_planner_executor(
+    adapter: LLMAdapter,
+    task: str,
+    *,
+    document_client: DocumentClient | None = None,
+) -> PlannerExecutorOutput:
+    client: DocumentClient = document_client or InMemoryDocumentClient()
     initial: _PlannerExecutorState = {
         "adapter": adapter,
+        "document_client": client,
         "task": task,
         "plan": [],
         "executed": 0,
         "answer": "",
+        "tool_results": [],
+        "last_search_results": [],
+        "context_docs": [],
     }
     result = _GRAPH.invoke(
         initial, config={"recursion_limit": MAX_PLAN_STEPS * 2 + MAX_EXECUTOR_STEPS + 10}
@@ -157,4 +278,5 @@ def run_planner_executor(adapter: LLMAdapter, task: str) -> PlannerExecutorOutpu
         answer=result["answer"],
         plan=result["plan"],
         steps_executed=result["executed"],
+        tool_results=result.get("tool_results", []),
     )

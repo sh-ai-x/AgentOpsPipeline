@@ -90,7 +90,7 @@ Returns (recomputed on every request):
   "recent_cost_usd": 0.0,
   "caveats": {
     "cost_usd": "Local-fake always returns 0.0 (fixture is free). For minimax/openai/anthropic, cost is computed locally...",
-    "tool_calls": "Default graph (fixed-v1) does not invoke MCP tools — its only call is an in-process lexical retrieval function..."
+    "tool_calls": "fixed-v1/single-agent-v1 stay at 0 by design; planner-executor-v1 persists one ToolCall row per executed step (ok for search_docs/read_document, error/unsupported_capability for get_issue)..."
   }
 }
 ```
@@ -102,7 +102,7 @@ Returns (recomputed on every request):
 export AGENTOPS_PRICING_JSON='{"my-fine-tune":{"input_per_1m":1.20,"output_per_1m":3.40}}'
 ```
 
-**Tool calls**: the default `fixed-v1` graph does NOT make MCP tool calls — its only call is an in-process lexical retrieval. The `planner-executor-v1` graph walks `search_docs` / `read_document` / `get_issue` but requires the MCP document server to be running; without it, `tool_calls` stays at 0. By design.
+**Tool calls**: `fixed-v1` and `single-agent-v1` never make MCP tool calls — `fixed-v1`'s only call is an in-process lexical retrieval, and `single-agent-v1`'s `TOOL` branch is still a stub; both keep `tool_calls` at 0, by design. `planner-executor-v1` executes its plan against a real `DocumentClient` (`InMemoryDocumentClient`, reading `fixtures/docs/*.md`) and persists one `ToolCall` row per executed step: `search_docs`/`read_document` record `outcome.status="ok"` with real fixture-corpus results; `get_issue` has no real backend anywhere in this repo and always records `outcome.status="error"` with `outcome.error_kind="unsupported_capability"` (normalised, not a crash). With `provider=local-fake` (the CI default) the planner LLM cannot produce a parseable plan, so `planner-executor-v1` still ends up at 0 `tool_calls` under CI; a live provider (minimax/openai/anthropic) that emits a real plan produces non-zero `tool_calls`.
 
 **CLI equivalent**: `uv run python scripts/print_metrics.py` prints the same numbers from the CLI.
 
