@@ -12,6 +12,12 @@ Stop conditions:
   - plan complete
   - per-step budget exhausted
   - escalation required (planner marks step with ESCALATE)
+
+Internally this is a real `langgraph.graph.StateGraph` with three nodes:
+`plan` (or `empty_plan` when the parser yields nothing), `execute`
+(looping via a conditional self-edge, budget-bounded), and `synthesize`
+— reproducing the original two-phase-plus-budget structure exactly, with
+the real tool execution living inside the `execute` node's per-step logic.
 """
 from __future__ import annotations
 
@@ -19,6 +25,9 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from typing import Any, TypedDict
+
+from langgraph.graph import END, StateGraph
 
 from ..llm.adapter import LLMAdapter
 from ..mcp import DocRef, DocumentClient, InMemoryDocumentClient, MCPError, classify_mcp_error
@@ -126,48 +135,72 @@ def _execute_step(
     return "ok", None, last_search_results
 
 
-def run_planner_executor(
-    adapter: LLMAdapter,
-    task: str,
-    *,
-    document_client: DocumentClient | None = None,
-) -> PlannerExecutorOutput:
-    client: DocumentClient = document_client or InMemoryDocumentClient()
+class _PlannerExecutorState(TypedDict, total=False):
+    adapter: Any  # LLMAdapter — opaque to the graph, not serialized
+    document_client: Any  # DocumentClient — opaque to the graph, not serialized
+    task: str
+    plan: list[str]
+    executed: int
+    answer: str
+    tool_results: list[dict]
+    last_search_results: list[DocRef]
+    context_docs: list[tuple[str, str]]
 
-    # Phase 1: plan
+
+def _plan_node(state: _PlannerExecutorState) -> dict[str, Any]:
+    adapter = state["adapter"]
+    task = state["task"]
     plan_resp = adapter.chat([{"role": "user", "content": _PLAN_PROMPT.format(task=task)}])
     plan = _parse_plan(plan_resp.content or "")
-    if not plan:
-        return PlannerExecutorOutput(
-            state=RunState.SUCCEEDED, answer=_REFUSE_MESSAGE, plan=[], steps_executed=0,
-            tool_results=[],
-        )
+    return {"plan": plan, "executed": 0}
 
-    # Phase 2: walk the plan within MAX_EXECUTOR_STEPS, executing real tools.
-    executed = 0
-    tool_results: list[dict] = []
-    last_search_results: list[DocRef] = []
-    context_docs: list[tuple[str, str]] = []
 
-    for tool in plan:
-        if executed >= MAX_EXECUTOR_STEPS:
-            break
-        start = time.monotonic()
-        outcome, error_kind, last_search_results = _execute_step(
-            tool, task, client, last_search_results, context_docs
-        )
-        latency_ms = int((time.monotonic() - start) * 1000)
-        tool_results.append(
-            {
-                "tool_name": tool,
-                "outcome": outcome,
-                "latency_ms": latency_ms,
-                "error_kind": error_kind,
-            }
-        )
-        executed += 1
+def _empty_plan_node(state: _PlannerExecutorState) -> dict[str, Any]:
+    return {"answer": _REFUSE_MESSAGE}
 
-    # Final synthesis, grounded in whatever text was actually retrieved.
+
+def _execute_node(state: _PlannerExecutorState) -> dict[str, Any]:
+    """Dispatch one plan step against the real DocumentClient.
+
+    Runs `_execute_step` (search_docs / read_document / get_issue) and
+    accumulates the result into `tool_results`, `last_search_results`, and
+    `context_docs` so the loop's later iterations and the final
+    `synthesize` node see everything retrieved so far.
+    """
+    task = state["task"]
+    client: DocumentClient = state["document_client"]
+    plan = state["plan"]
+    executed = state["executed"]
+    tool = plan[executed]
+    last_search_results = state.get("last_search_results", [])
+    context_docs = list(state.get("context_docs", []))
+    tool_results = list(state.get("tool_results", []))
+
+    start = time.monotonic()
+    outcome, error_kind, last_search_results = _execute_step(
+        tool, task, client, last_search_results, context_docs
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+    tool_results.append(
+        {
+            "tool_name": tool,
+            "outcome": outcome,
+            "latency_ms": latency_ms,
+            "error_kind": error_kind,
+        }
+    )
+    return {
+        "executed": executed + 1,
+        "tool_results": tool_results,
+        "last_search_results": last_search_results,
+        "context_docs": context_docs,
+    }
+
+
+def _synthesize_node(state: _PlannerExecutorState) -> dict[str, Any]:
+    adapter = state["adapter"]
+    task = state["task"]
+    context_docs = state.get("context_docs", [])
     docs_blob = (
         "\n\n--\n\n".join(f"[{doc_id}]: {snippet}" for doc_id, snippet in context_docs)
         if context_docs
@@ -179,10 +212,71 @@ def run_planner_executor(
     answer = (synth_resp.content or "").strip()
     if "REFUSE" in answer.upper()[:32]:
         answer = _REFUSE_MESSAGE
+    return {"answer": answer or _CLARIFY_MESSAGE}
+
+
+def _route_after_plan(state: _PlannerExecutorState) -> str:
+    return "execute" if state["plan"] else "empty_plan"
+
+
+def _route_after_execute(state: _PlannerExecutorState) -> str:
+    if state["executed"] >= len(state["plan"]) or state["executed"] >= MAX_EXECUTOR_STEPS:
+        return "synthesize"
+    return "continue"
+
+
+def _build_graph():
+    """Build and compile the planner/executor graph's `StateGraph`.
+
+    plan -> (empty_plan | execute) ; execute loops on itself
+    (budget-bounded), dispatching a real DocumentClient tool call each
+    iteration, -> synthesize -> END.
+    """
+    graph = StateGraph(_PlannerExecutorState)
+    graph.add_node("plan", _plan_node)
+    graph.add_node("empty_plan", _empty_plan_node)
+    graph.add_node("execute", _execute_node)
+    graph.add_node("synthesize", _synthesize_node)
+    graph.set_entry_point("plan")
+    graph.add_conditional_edges(
+        "plan", _route_after_plan, {"empty_plan": "empty_plan", "execute": "execute"}
+    )
+    graph.add_conditional_edges(
+        "execute", _route_after_execute, {"continue": "execute", "synthesize": "synthesize"}
+    )
+    graph.add_edge("synthesize", END)
+    graph.add_edge("empty_plan", END)
+    return graph.compile()
+
+
+_GRAPH = _build_graph()
+
+
+def run_planner_executor(
+    adapter: LLMAdapter,
+    task: str,
+    *,
+    document_client: DocumentClient | None = None,
+) -> PlannerExecutorOutput:
+    client: DocumentClient = document_client or InMemoryDocumentClient()
+    initial: _PlannerExecutorState = {
+        "adapter": adapter,
+        "document_client": client,
+        "task": task,
+        "plan": [],
+        "executed": 0,
+        "answer": "",
+        "tool_results": [],
+        "last_search_results": [],
+        "context_docs": [],
+    }
+    result = _GRAPH.invoke(
+        initial, config={"recursion_limit": MAX_PLAN_STEPS * 2 + MAX_EXECUTOR_STEPS + 10}
+    )
     return PlannerExecutorOutput(
         state=RunState.SUCCEEDED,
-        answer=answer or _CLARIFY_MESSAGE,
-        plan=plan,
-        steps_executed=executed,
-        tool_results=tool_results,
+        answer=result["answer"],
+        plan=result["plan"],
+        steps_executed=result["executed"],
+        tool_results=result.get("tool_results", []),
     )
