@@ -2,11 +2,19 @@
 
 This is the MVP graph. Step 5 adds single-agent and planner/executor
 variants using the same tool contracts.
+
+Internally this is a real `langgraph.graph.StateGraph`: a `classify`
+node decides the route, then conditional edges dispatch to `refuse`,
+`clarify`, or `answer` terminal nodes — the same if/elif chain the
+original plain-Python version encoded, now expressed as graph wiring.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any, TypedDict
+
+from langgraph.graph import END, StateGraph
 
 from ..llm.adapter import LLMAdapter
 from .state import RunState
@@ -117,47 +125,105 @@ _CLARIFY_MESSAGE = (
 )
 
 
+class _FixedGraphState(TypedDict, total=False):
+    adapter: Any  # LLMAdapter — opaque to the graph, not serialized
+    task: str
+    route: str  # set by "classify"; consumed by the conditional edge
+    answer: str | None
+    rationale: str
+    run_state: RunState
+
+
+def _classify_node(state: _FixedGraphState) -> dict[str, Any]:
+    route = _classify(state["adapter"], state["task"])
+    log.info("fixed_graph: route=%s", route)
+    return {"route": route}
+
+
+def _refuse_node(state: _FixedGraphState) -> dict[str, Any]:
+    return {
+        "answer": _REFUSE_MESSAGE,
+        "route": "refuse",
+        "rationale": "no relevant evidence",
+        "run_state": RunState.SUCCEEDED,
+    }
+
+
+def _clarify_node(state: _FixedGraphState) -> dict[str, Any]:
+    return {
+        "answer": _CLARIFY_MESSAGE,
+        "route": "clarify",
+        "rationale": "task is ambiguous",
+        "run_state": RunState.SUCCEEDED,
+    }
+
+
+def _answer_node(state: _FixedGraphState) -> dict[str, Any]:
+    task = state["task"]
+    adapter = state["adapter"]
+    retrieved = _retrieve_docs(task)
+    prompt = _ANSWER_PROMPT.format(docs=retrieved, task=task)
+    resp = adapter.chat([{"role": "user", "content": prompt}])
+    content = (resp.content or "").strip()
+    if "REFUSE" in content.upper()[:32]:
+        return {
+            "answer": _REFUSE_MESSAGE,
+            "route": "refuse",
+            "rationale": "answer model self-flagged REFUSE",
+            "run_state": RunState.SUCCEEDED,
+        }
+    return {
+        "answer": content,
+        "route": "answer",
+        "rationale": "answered from corpus",
+        "run_state": RunState.SUCCEEDED,
+    }
+
+
+def _route_after_classify(state: _FixedGraphState) -> str:
+    route = state["route"]
+    if route == "refuse":
+        return "refuse"
+    if route == "clarify":
+        return "clarify"
+    return "answer"
+
+
+def _build_graph():
+    """Build and compile the fixed graph's `StateGraph`.
+
+    classify -> (refuse | clarify | answer) -> END, reproducing the
+    original if/elif chain as real conditional graph edges.
+    """
+    graph = StateGraph(_FixedGraphState)
+    graph.add_node("classify", _classify_node)
+    graph.add_node("refuse", _refuse_node)
+    graph.add_node("clarify", _clarify_node)
+    graph.add_node("answer", _answer_node)
+    graph.set_entry_point("classify")
+    graph.add_conditional_edges(
+        "classify",
+        _route_after_classify,
+        {"refuse": "refuse", "clarify": "clarify", "answer": "answer"},
+    )
+    graph.add_edge("refuse", END)
+    graph.add_edge("clarify", END)
+    graph.add_edge("answer", END)
+    return graph.compile()
+
+
+_GRAPH = _build_graph()
+
+
 def run_fixed_graph(adapter: LLMAdapter, task: str, *, evidence: str = "") -> GraphOutput:
     """Execute the fixed graph. Deterministic classify + answer."""
     log.info("fixed_graph: classify task len=%d", len(task))
-    route = _classify(adapter, task)
-    log.info("fixed_graph: route=%s", route)
-
-    if route == "refuse":
-        return GraphOutput(
-            state=RunState.SUCCEEDED,
-            answer=_REFUSE_MESSAGE,
-            route="refuse",
-            rationale="no relevant evidence",
-        )
-
-    if route == "clarify":
-        return GraphOutput(
-            state=RunState.SUCCEEDED,
-            answer=_CLARIFY_MESSAGE,
-            route="clarify",
-            rationale="task is ambiguous",
-        )
-
-    # route == answer
-    retrieved = _retrieve_docs(task)
-    prompt = _ANSWER_PROMPT.format(docs=retrieved, task=task)
-    resp = adapter.chat(
-        [{"role": "user", "content": prompt}]
-    )
-    content = (resp.content or "").strip()
-    if "REFUSE" in content.upper()[:32]:
-        return GraphOutput(
-            state=RunState.SUCCEEDED,
-            answer=_REFUSE_MESSAGE,
-            route="refuse",
-            rationale="answer model self-flagged REFUSE",
-        )
+    result = _GRAPH.invoke({"adapter": adapter, "task": task})
     return GraphOutput(
-        state=RunState.SUCCEEDED,
-        answer=content,
-        route="answer",
-        rationale="answered from corpus",
+        state=result["run_state"],
+        answer=result["answer"],
+        route=result["route"],
+        rationale=result.get("rationale", ""),
     )
 
 
