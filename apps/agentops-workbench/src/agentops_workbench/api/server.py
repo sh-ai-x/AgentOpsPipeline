@@ -32,7 +32,7 @@ from ..db.session import session_scope
 from ..graph.state import RunState, make_action_key
 from ..graph.topology import run_topology
 from ..llm.factory import make_adapter
-from ..mocks.tickets import TicketLedger
+from ..mocks.tickets import DuplicateArgsError, TicketLedger
 from ..settings import get_settings
 
 log = logging.getLogger(__name__)
@@ -112,6 +112,12 @@ class ApproveResult(BaseModel):
     action_id: str
     nonce: str
     expires_at: str
+
+
+class ExecuteResult(BaseModel):
+    action_id: str
+    ticket_id: str
+    used_at: str
 
 
 # ---- Auth ----
@@ -422,6 +428,59 @@ def create_action(body: ApproveBody, run_id: str, principal_id: str = Depends(re
         )
         s.add(action)
     return ApproveResult(action_id=action_id, nonce=nonce, expires_at=expires_at.isoformat())
+
+
+@app.post("/v1/actions/{action_id}/execute", response_model=ExecuteResult)
+def execute_action(action_id: str, principal_id: str = Depends(require_principal)) -> ExecuteResult:
+    """Execute an approved action: run -> ticket draft -> TicketLedger.publish().
+
+    Idempotent by design, not by an explicit guard: TicketLedger.publish()
+    is itself idempotent on action_key (== action_id here), so re-executing
+    an already-used_at-stamped action naturally returns the same
+    TicketRecord instead of double-publishing. A DuplicateArgsError (a
+    replay with mutated args under the same action_key) surfaces as a
+    clean 409, never a raw 500 -- the "failed tool is visible" half of
+    step 2's AC.
+    """
+    with session_scope() as s:
+        action = s.get(Action, action_id)
+        if action is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="action not found")
+        run = s.get(Run, action.run_id)
+        if run is None or run.principal_id != principal_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="action not found")
+
+        if action.cancelled:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="action is cancelled")
+
+        expires_at = action.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if now > expires_at:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="action has expired")
+
+        args = action.args_canonical or {}
+        title = args.get("title") or f"Ticket for run {action.run_id}"
+        body = args.get("body") or run.answer or run.task or f"Ticket for run {action.run_id}"
+
+        try:
+            ticket = get_ledger().publish(
+                action_key=action.id,
+                title=title,
+                body=body,
+                published_by=principal_id,
+                args=args,
+            )
+        except DuplicateArgsError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"action replay with mutated args: {exc}",
+            ) from exc
+
+        action.used_at = now
+        s.add(action)
+        return ExecuteResult(action_id=action.id, ticket_id=ticket.id, used_at=now.isoformat())
 
 
 def make_test_client() -> TestClient:
