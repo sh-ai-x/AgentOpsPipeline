@@ -58,7 +58,11 @@ class _ScriptedAdapter(LLMAdapter):
 class _StubDocumentClient:
     """Fake DocumentClient for the injectability test."""
 
+    def __init__(self) -> None:
+        self.search_calls = 0
+
     def search_docs(self, query: str, top_k: int = 5) -> list[DocRef]:
+        self.search_calls += 1
         return [DocRef(doc_id="stub-doc", title="stub", score=1.0)]
 
     def read_document(self, doc_id: str, offset: int = 0, limit: int = 2000) -> str:
@@ -111,6 +115,33 @@ def test_planner_executor_read_document_uses_task_text_when_search_not_planned()
     assert "PostgresCheckpointer" in final_prompt
 
 
+def test_planner_executor_grounds_prompt_when_only_search_docs_planned() -> None:
+    """A single-step plan of just search_docs -- a plausible plan for a live
+    LLM -- must still ground the final prompt in what was found. Before the
+    fix, context_docs (populated only by read_document) stayed empty and
+    the hit was silently discarded; the prompt rendered '(no relevant docs
+    found)' despite search_docs having found a real match."""
+    adapter = _ScriptedAdapter(["step: search_docs", "ANSWER: grounded"])
+    out = run_planner_executor(adapter, "anything", document_client=_StubDocumentClient())
+    assert out.tool_results[0]["outcome"] == "ok"
+    final_prompt = adapter.calls[1][0]["content"]
+    assert "stub-doc" in final_prompt
+
+
+def test_planner_executor_caches_fallback_search_across_read_document_steps() -> None:
+    """Two read_document steps with no preceding search_docs step must reuse
+    the first fallback search's hit, not re-run an identical search for
+    every step."""
+    client = _StubDocumentClient()
+    adapter = _ScriptedAdapter(
+        ["step: read_document\nstep: read_document", "ANSWER: grounded"]
+    )
+    out = run_planner_executor(adapter, "anything", document_client=client)
+    assert out.tool_results[0]["outcome"] == "ok"
+    assert out.tool_results[1]["outcome"] == "ok"
+    assert client.search_calls == 1
+
+
 def test_document_client_is_injectable() -> None:
     adapter = _ScriptedAdapter(["step: search_docs\nstep: read_document", "ANSWER: grounded"])
     out = run_planner_executor(
@@ -120,6 +151,19 @@ def test_document_client_is_injectable() -> None:
     assert out.tool_results[1]["outcome"] == "ok"
     final_prompt = adapter.calls[1][0]["content"]
     assert "unique-marker-xyz" in final_prompt
+
+
+def test_tool_results_carry_real_args_not_step_position() -> None:
+    """Each tool_results entry's "args" is what the tool was ACTUALLY
+    invoked with -- callers (server.py:_persist_tool_calls) key the
+    crash-recovery idempotency action_key on this, so it must reflect the
+    real call, not a {"tool_name", "step_index"} placeholder."""
+    adapter = _ScriptedAdapter(["step: search_docs\nstep: read_document", "ANSWER: grounded"])
+    out = run_planner_executor(
+        adapter, "the real task text", document_client=_StubDocumentClient()
+    )
+    assert out.tool_results[0]["args"] == {"query": "the real task text"}
+    assert out.tool_results[1]["args"] == {"doc_id": "stub-doc"}
 
 
 # ---- get_issue: no real backend, must not crash ----

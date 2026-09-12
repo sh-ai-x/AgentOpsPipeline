@@ -194,13 +194,18 @@ def _persist_tool_calls(session, run_id: str, tool_results: list[dict[str, Any]]
     fixed/single_agent never produce tool_results, so this is a no-op for
     them -- their tool_calls count stays 0, by design. action_key reuses
     the existing state.make_action_key() dedup helper (run_id, tool_name,
-    canonical-hash(args)); args_canonical is the canonical JSON string of
-    the args dict, mirroring mocks.tickets.TicketLedger.canonicalize().
+    canonical-hash(args)), keyed on the REAL args the tool was invoked with
+    (`entry["args"]` -- `{"query": task}` for search_docs, `{"doc_id": ...}`
+    for read_document, `{}` otherwise), not a step-position placeholder --
+    a retry that re-dispatches the same real call must land on the same
+    action_key to satisfy the crash-recovery idempotency invariant
+    documented in graph/state.py. args_canonical is stored as the dict
+    itself (ToolCall.args_canonical is a JSON column, same shape as
+    Action.args_canonical below -- not a double-encoded JSON string).
     """
-    for idx, entry in enumerate(tool_results):
+    for entry in tool_results:
         tool_name = entry["tool_name"]
-        args = {"tool_name": tool_name, "step_index": idx}
-        args_canonical = json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)
+        args = entry.get("args") or {}
         action_key = make_action_key(run_id, tool_name, args)
         outcome_payload: dict[str, Any] = {"status": entry["outcome"]}
         if entry.get("error_kind"):
@@ -217,7 +222,7 @@ def _persist_tool_calls(session, run_id: str, tool_results: list[dict[str, Any]]
                 # dispatched without a human-in-the-loop approval step.
                 policy_decision="auto",
                 action_key=action_key,
-                args_canonical=args_canonical,
+                args_canonical=args,
                 outcome=outcome_payload,
                 latency_ms=entry.get("latency_ms", 0),
             )

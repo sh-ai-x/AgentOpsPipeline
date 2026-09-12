@@ -164,6 +164,45 @@ def test_planner_executor_v1_records_get_issue_as_error_and_still_succeeds(
     assert tc["outcome"]["error_kind"] == "unsupported_capability"
 
 
+def test_planner_executor_v1_tool_call_args_canonical_uses_real_args(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """args_canonical must be the REAL tool args, stored as a dict (the
+    column is JSON-typed) -- not a {"tool_name", "step_index"} placeholder
+    encoded as a double-JSON string. The crash-recovery idempotency
+    invariant (graph/state.py:make_action_key) is keyed on what was
+    actually invoked, not step position."""
+    task = "Explain PostgresCheckpointer persistence in LangGraph"
+    plan_text = "step: search_docs\nstep: read_document"
+    synth_text = "ANSWER: grounded"
+    scripted = _ScriptedAdapter([plan_text, synth_text])
+    monkeypatch.setattr(
+        "agentops_workbench.api.server.make_adapter", lambda settings: scripted
+    )
+
+    r = client.post(
+        "/v1/runs",
+        json={"task": task, "graph_version": "planner-executor-v1"},
+        headers=_bearer(),
+    )
+    assert r.status_code == 201, r.text
+    run_id = r.json()["id"]
+
+    from agentops_workbench.db.models import Run
+    from agentops_workbench.db.session import session_scope
+
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        rows = sorted(run.tool_calls, key=lambda tc: tc.created_at)
+        assert len(rows) == 2
+        assert isinstance(rows[0].args_canonical, dict)
+        assert rows[0].tool_name == "search_docs"
+        assert rows[0].args_canonical == {"query": task}
+        assert isinstance(rows[1].args_canonical, dict)
+        assert rows[1].tool_name == "read_document"
+        assert "doc_id" in rows[1].args_canonical
+
+
 def test_planner_executor_v1_with_local_fake_makes_no_tool_calls(client: TestClient) -> None:
     """local-fake can't produce a parseable plan (no scripted plan text),
     so it still short-circuits to refuse with zero tool calls -- this is
