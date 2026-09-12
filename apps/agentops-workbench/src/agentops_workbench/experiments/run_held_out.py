@@ -38,7 +38,7 @@ def run(repo_root: Path, *, output_dir: Path | None = None) -> tuple[list[RunOut
     out_dir = output_dir or (repo_root / "experiments" / "held-out-v1")
     out_dir.mkdir(parents=True, exist_ok=True)
     ceiling = SpendCeiling(max_usd=5.0)
-    selected = ("fixed", "single_agent")
+    selected = ("fixed", "single_agent", "planner_executor")
 
     manifest = ExperimentManifest(
         started_at=_now_iso(),
@@ -76,7 +76,13 @@ def run(repo_root: Path, *, output_dir: Path | None = None) -> tuple[list[RunOut
                     answer = result.get("answer") or ""
                     ok = task_success(case, answer)
                     recall = retrieval_recall_at_k(case, [case.source_refs[0]] if case.source_refs else [])
-                    tool_corr = tool_correctness(case, [])
+                    # Score against what the run ACTUALLY called, not an
+                    # always-empty placeholder -- fixed/single_agent (when
+                    # it doesn't dispatch a TOOL) have no tool_results key
+                    # at all, .get(..., []) keeps that case at 0.0 as
+                    # before; planner_executor/single_agent runs that did
+                    # call a tool now score against the real calls.
+                    tool_corr = tool_correctness(case, result.get("tool_results", []))
                     outcomes.append(RunOutcome(
                         run_id=uuid.uuid4().hex[:16],
                         case_id=case.id,
@@ -167,7 +173,7 @@ def _write_uncertainty(path: Path, outcomes: list[RunOutcome], manifest: Experim
         "",
         "## Caveats",
         "",
-        "- 6 held-out cases x 2 trials x 2 topologies = 24 runs is illustrative, not statistically settled.",
+        "- 6 held-out cases x 2 trials x 3 topologies = 36 runs is illustrative, not statistically settled.",
         "- Family-aware uncertainty is NOT computed because sample size per family is too small (1 case / family).",
         "- Temperature 0 is set; provider-side stochasticity may still cause non-determinism.",
     ]
