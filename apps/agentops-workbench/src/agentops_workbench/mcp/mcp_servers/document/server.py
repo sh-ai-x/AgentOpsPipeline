@@ -144,12 +144,21 @@ def handle_request(req: dict, corpus: dict[str, str]) -> dict:
     }
 
 
+def _default_corpus_dir() -> str:
+    """fixtures/docs/, resolved relative to this file's location.
+
+    __file__ is <app_root>/src/agentops_workbench/mcp/mcp_servers/document/server.py
+    -- six .parent hops from here land on <app_root> (document -> mcp_servers
+    -> mcp -> agentops_workbench -> src -> <app_root>), where fixtures/ lives.
+    """
+    return str(
+        Path(__file__).resolve().parent.parent.parent.parent.parent.parent / "fixtures" / "docs"
+    )
+
+
 def main_stdio(corpus_dir: str | None = None) -> None:  # pragma: no cover - exercised via integration
     """Run a minimal stdio JSON-RPC loop. Used by subprocess-launching clients."""
-    corpus = _load_corpus(
-        corpus_dir
-        or str(Path(__file__).resolve().parent.parent.parent.parent.parent / "fixtures" / "docs")
-    )
+    corpus = _load_corpus(corpus_dir or _default_corpus_dir())
     for line in sys.stdin:
         line = line.strip()
         if not line:
