@@ -17,7 +17,12 @@ def fixed(adapter: LLMAdapter, task: str) -> dict[str, Any]:
 
 def single_agent(adapter: LLMAdapter, task: str) -> dict[str, Any]:
     out: SingleAgentOutput = run_single_agent(adapter, task)
-    return {"state": out.state, "answer": out.answer, "steps": out.steps}
+    return {
+        "state": out.state,
+        "answer": out.answer,
+        "steps": out.steps,
+        "tool_results": out.tool_results,
+    }
 
 
 def planner_executor(adapter: LLMAdapter, task: str) -> dict[str, Any]:
