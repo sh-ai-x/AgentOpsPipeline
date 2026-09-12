@@ -20,6 +20,9 @@ from agentops_workbench.settings import Settings
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    # Ignore the developer's local .env — these tests assert on Settings defaults
+    # (e.g. the dev-default JWT secret), which a real .env would silently override.
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
     monkeypatch.setenv("AGENTOPS_DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
     monkeypatch.setenv("AGENTOPS_PROVIDER", "local-fake")
     reset_for_tests()
