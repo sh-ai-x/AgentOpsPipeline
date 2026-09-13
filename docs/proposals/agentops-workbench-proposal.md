@@ -200,13 +200,13 @@ not deferred.
 > changes neither. It adds two things Update 1 left open: **which single
 > flow is the demo**, and **where the backend actually runs**.
 >
-> **Merge-order note.** This section is written to sit immediately after
-> §"Pivot (2026-09-13)". That section arrives via PR #32, which is still
-> open at the time of writing, so on `main` this addendum will land at the
-> same insertion point and produce a "both added" textual conflict with
-> it. Resolution is mechanical: keep Update 1 first, then this section.
-> If this PR somehow merges first, §"Pivot (2026-09-13)" must be inserted
-> **above** this one, not below. Nothing here is meaningful without it.
+> **Merge-order note (resolved).** This section was written to sit
+> immediately after §"Pivot (2026-09-13)" while PR #32 was still open;
+> merging both produced exactly the predicted "both added" textual
+> conflict at that insertion point, resolved exactly as predicted — Update
+> 1 first, this section directly after, both otherwise unchanged. PR #32
+> and PR #33 are now both merged; this section (and ADR-0008, alongside
+> ADR-0007) landed via the consolidated PR that reconciled that conflict.
 >
 > Third planning iteration on this pivot in one day. The first two
 > iterations (PRs #32, #33) are narrative and pattern work; PR #34 is the

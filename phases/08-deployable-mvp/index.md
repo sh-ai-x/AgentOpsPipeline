@@ -81,7 +81,7 @@ reconstructing one, is an open question this phase does not resolve.
 
 | PR | State | Bearing on this phase |
 |----|-------|------------------------|
-| #34 | open | The five adapters this phase wires two of. `search_evidence`/`read_evidence` signatures this phase's CLI calls directly. |
+| #34 | merged | The five adapters this phase wires two of. `search_evidence`/`read_evidence` signatures this phase's CLI calls directly. |
 | #29 | open | `SubprocessDocumentClient` — unrelated lifecycle question (subprocess-per-call); this phase's adapters run in-process, no cold-start cost applies here. |
 | #21/#25/#26 | merged/open | `planner_executor`/`single_agent`'s real tool execution — precedent for "a topology that actually calls something," not reused directly (see ADR-0008 for why `planner_executor` specifically doesn't fit). |
 

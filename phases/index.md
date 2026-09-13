@@ -21,7 +21,7 @@
 >
 > **Amended again, same day.** Phase 7 is **partially built**, not
 > "not started" — [PR #34](https://github.com/sh-ai-x/AgentOpsPipeline/pull/34)
-> (open, unmerged) implements all five adapters, 223 tests passing; the
+> (merged) implements all five adapters, 223 tests passing; the
 > registry/config layer and Pillar 2's eval layer are the remaining gaps
 > (see [`07-adapter-pattern-pivot/index.md`](07-adapter-pattern-pivot/index.md)'s
 > reconciled deliverables list). A new **Phase 8** narrows the product
@@ -158,7 +158,7 @@ describe how the agent runs, not the monorepo layout). Project-level index:
   Architecture (LangGraph topologies, MCP tool execution, FastAPI surface,
   benchmark harness) is unchanged. All five adapters are implemented and
   tested in [PR #34](https://github.com/sh-ai-x/AgentOpsPipeline/pull/34)
-  (open, 223 tests passing) — the registry/config layer and Pillar 2's
+  (merged, 223 tests passing) — the registry/config layer and Pillar 2's
   eval layer remain open. See
   [`07-adapter-pattern-pivot/index.md`](07-adapter-pattern-pivot/index.md),
   [ADR-0007](../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md),

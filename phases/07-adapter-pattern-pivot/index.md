@@ -6,7 +6,7 @@
 - **Canonical step plan:** none. The `.dev-kit/round-1/` planning round covered `step1..step7` = Phases 0–6 only; this phase is planned directly in the proposal and [ADR-0007](../../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md), so there is no `step<N>.md` ancestor and no `step<N>-output.json`.
 - **Estimated:** 2.0 weeks (plan value, not measured effort)
 - **Exit criterion:** A run against a GitHub issue returns a draft whose every citation resolves to an `EvidenceRef` from a registered adapter, with the docs-corpus test suite passing unchanged and `retrieval_recall` reported per `source_kind`
-- **Status:** **partially built** — PR #34 (open, unmerged) implements all
+- **Status:** **partially built** — PR #34 (merged) implements all
   five adapters (`WikiRagAdapter`, `GitHubIssueAdapter`,
   `SecurityLogAdapter`, `IncidentLogAdapter`, `TicketSystemAdapter`)
   against the Protocol below, 223 tests passing, ruff clean. Deliberately
