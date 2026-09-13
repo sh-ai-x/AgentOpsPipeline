@@ -6,8 +6,15 @@
 - **Canonical step plan:** none. The `.dev-kit/round-1/` planning round covered `step1..step7` = Phases 0–6 only; this phase is planned directly in the proposal and [ADR-0007](../../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md), so there is no `step<N>.md` ancestor and no `step<N>-output.json`.
 - **Estimated:** 2.0 weeks (plan value, not measured effort)
 - **Exit criterion:** A run against a GitHub issue returns a draft whose every citation resolves to an `EvidenceRef` from a registered adapter, with the docs-corpus test suite passing unchanged and `retrieval_recall` reported per `source_kind`
-- **Status:** **not started** — planning documents only, no code
-- **Build output:** none yet
+- **Status:** **partially built** — PR #34 (open, unmerged) implements all
+  five adapters (`WikiRagAdapter`, `GitHubIssueAdapter`,
+  `SecurityLogAdapter`, `IncidentLogAdapter`, `TicketSystemAdapter`)
+  against the Protocol below, 223 tests passing, ruff clean. Deliberately
+  **not** wired into `graph/**` yet — see
+  [ADR-0008](../../apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md)
+  and [phase 08](../08-deployable-mvp/index.md) for the flow that wires
+  two of them in.
+- **Build output:** [PR #34](https://github.com/sh-ai-x/AgentOpsPipeline/pull/34)
 
 ## Why this phase exists
 
@@ -26,31 +33,54 @@ merged), and PR #29 (open) adds `SubprocessDocumentClient` as a second
 real implementation. This phase names that pattern
 (`EvidenceSourceAdapter`) and adds siblings for non-document sources.
 
-## Deliverables (planned)
+## Deliverables — as planned vs. as built (PR #34, reconciled 2026-09-13)
 
-1. **Rename, no new sources** — `EvidenceSourceAdapter`, `EvidenceRef`,
-   `search_evidence`, `read_evidence`; `list_filesystem_files` moved to a
-   `FilesystemScopedSource` extension Protocol; `DocumentClient` kept as a
-   deprecated alias. Pure refactor, unchanged test count. Must land
-   **after** PRs #25–#31 to avoid rebase-thrashing open work.
-2. **`EVIDENCE_SOURCES` registry + config** — mirrors `TOPOLOGIES` and the
-   ADR-0003 provider allow-list; `AGENTOPS_EVIDENCE_SOURCES` parsed and
-   validated at startup; `local-fake` resolution so CI never touches the
-   network. `DocsCorpusAdapter` is the only entry; behaviour identical.
-3. **`IncidentLogAdapter`** — first non-document source, reading this
-   project's own `ToolCall` / `Usage` rows (timeouts, 429s, provider
-   errors). No new credential, no new infrastructure. Proves the
-   `window` / `filters` widening against a real time-windowed source.
-4. **`GitHubIssueAdapter`** — the OSS-maintainer story's primary input.
-   Recorded-fixture CI, a marked live integration test, explicit
-   rate-limit handling, a per-repo scope predicate plus its negative test.
-5. **Observability/eval layer (Pillar 2)** — groundedness scoring and
-   per-`source_kind` cost/latency drift over the already-persisted
-   `Usage` / `ToolCall` series.
+This section originally planned a narrower, sequenced rollout. PR #34
+built a wider slice in one pass instead. Recorded honestly rather than
+quietly rewritten to look predicted:
 
-**Explicitly not in this phase:** `WikiRagAdapter` (carries a pgvector
-reversal that needs its own ADR) and `SecurityLogAdapter` (deferred; shares
-`IncidentLogAdapter`'s query shape).
+1. **Rename** — done, but not as planned. Planned: `DocumentClient` kept
+   as a deprecated alias, `list_filesystem_files` moved to a
+   `FilesystemScopedSource` extension Protocol. Built: `DocumentClient`
+   is untouched and still lives at `mcp/__init__.py` (no alias — the new
+   `EvidenceSourceAdapter` Protocol in `adapters/base.py` is additive, not
+   a replacement, specifically so it doesn't conflict with #21/#25/#26/#29
+   which all still call `DocumentClient` directly); `list_filesystem_files`
+   was **dropped**, not extension-Protocol'd — real defect found:
+   `SubprocessDocumentClient` (#29) already couldn't implement it, so a
+   shared method one of two implementations can't honour was never
+   actually shared.
+2. **`EVIDENCE_SOURCES` registry** — **not built**. Each adapter is
+   constructed directly; no `TOPOLOGIES`-style registry or
+   `AGENTOPS_EVIDENCE_SOURCES` config exists yet. Genuinely open, unlike
+   the items below.
+3. **`IncidentLogAdapter`** — done, roughly as planned. Aggregates
+   `ToolCall`-shaped error records by `error_kind` within a window into
+   one `EvidenceRef` per aggregate.
+4. **`GitHubIssueAdapter`** — done. Real `httpx` calls against the GitHub
+   REST API; tests use `pytest-httpx`, zero live network calls (narrower
+   than the original "a marked live integration test" plan — no live-
+   network test exists).
+5. **Observability/eval layer (Pillar 2)** — **not built** in this phase.
+   Still substrate-only (`Usage`/`ToolCall`, merged in #21).
+6. **`WikiRagAdapter`** — built, **despite this section originally saying
+   "explicitly not in this phase."** The stated blocker ("carries a
+   pgvector reversal that needs its own ADR") turned out not to apply:
+   it's real, pure-Python TF-IDF/cosine similarity, no embeddings, no
+   vector store, no pgvector decision to make.
+7. **`SecurityLogAdapter`** — built, despite being "deferred" here.
+   Structured JSONL, `window`/`filters`-driven, matching
+   `IncidentLogAdapter`'s query shape as this section predicted.
+8. **`TicketSystemAdapter`** — built. Not listed in the original plan at
+   all — a thin facade over the existing `TicketLedger`, the customer-
+   support/ticketing extensibility proof (zero new domain logic, added
+   two small additive read-only methods to `mocks/tickets.py`).
+
+Net: 5 of 5 adapters exist and are tested (223 passing); the registry/
+config layer and the eval layer are the genuinely remaining gaps, not the
+adapters themselves. See
+[phase 08](../08-deployable-mvp/index.md) for what wires two of the five
+into an actual flow.
 
 ## What already exists (do not re-claim as new)
 

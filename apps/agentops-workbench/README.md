@@ -17,6 +17,16 @@
 > **Status: design + adapter implementation are in open PRs, not yet
 > merged** — everything below this note describes what is currently on
 > `main`, which still reflects the original ticketing flow end-to-end.
+>
+> **Follow-up (same day):** the five adapters above are real and tested —
+> [PR #34](https://github.com/sh-ai-x/AgentOpsPipeline/pull/34), 223
+> passing, none wired into `graph/**` yet. The product scope has narrowed
+> to one flagship flow — `agentops-oss-helper <github-repo-url>`, wiring
+> two of the five adapters (Wiki + GitHub Issues) into a new `oss_triage`
+> topology — plus a real deployment target (Fly.io, SQLite on a volume)
+> and a backend/frontend split verifiable without Streamlit. See
+> [`docs/adr/0008-github-url-cli-and-deployment-target.md`](docs/adr/0008-github-url-cli-and-deployment-target.md)
+> and the proposal's §"Update 2 (2026-09-13)".
 
 A support-operations agent that turns a software issue into a grounded
 answer and an approval-gated ticket draft, plus an experiment workbench

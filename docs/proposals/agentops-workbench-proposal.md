@@ -191,6 +191,472 @@ The operator cannot judge answer quality in that domain, so no claim built
 on it is defensible. Excluded from the portfolio narrative permanently —
 not deferred.
 
+## Update 2 (2026-09-13): One Flagship GitHub-URL Flow, Backend-First, Deployable
+
+> **Second dated addendum. It builds on §"Pivot (2026-09-13)" (Update 1,
+> PR #32); it does not replace it.** Update 1 retired the
+> customer-support framing and generalized the evidence seam into an
+> `EvidenceSourceAdapter` pattern. Both decisions stand. This update
+> changes neither. It adds two things Update 1 left open: **which single
+> flow is the demo**, and **where the backend actually runs**.
+>
+> **Merge-order note.** This section is written to sit immediately after
+> §"Pivot (2026-09-13)". That section arrives via PR #32, which is still
+> open at the time of writing, so on `main` this addendum will land at the
+> same insertion point and produce a "both added" textual conflict with
+> it. Resolution is mechanical: keep Update 1 first, then this section.
+> If this PR somehow merges first, §"Pivot (2026-09-13)" must be inserted
+> **above** this one, not below. Nothing here is meaningful without it.
+>
+> Third planning iteration on this pivot in one day. The first two
+> iterations (PRs #32, #33) are narrative and pattern work; PR #34 is the
+> implementation that made this iteration possible to write concretely
+> instead of aspirationally.
+
+### What changed since Update 1, in the code
+
+Update 1 described five adapters as future work. **PR #34 built them, with
+tests.** `src/agentops_workbench/adapters/` now contains a real
+`EvidenceSourceAdapter` Protocol plus `WikiRagAdapter` (pure-Python
+TF-IDF/cosine retrieval over a directory of `.md` files),
+`GitHubIssueAdapter` (real `httpx` calls to GitHub REST v3),
+`SecurityLogAdapter`, `IncidentLogAdapter` and `TicketSystemAdapter`. They
+are not wired into `graph/**` yet, by design.
+
+That changes what this proposal can honestly claim, in both directions:
+
+- The adapters are no longer a plan, so a flow built on two of them can be
+  specified against real constructor signatures rather than sketched.
+- The implemented `EvidenceRef` is `(ref_id, title, score, source_kind,
+  retrieved_at)` — it **dropped the `uri` field** that
+  [ADR-0007](../../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md)
+  §2 specified, and `read_evidence` takes `ref_id`, not `evidence_id`.
+  Recorded here rather than quietly reconciled: a citation therefore has
+  no self-describing link, and whatever renders a citation has to supply
+  one. The flow below does exactly that, and
+  [ADR-0008](../../apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md)
+  records it as a known divergence to close later.
+
+### Product scope reduction: one flow, not five adapters
+
+The five adapters stay in the codebase as the general-purpose foundation.
+**The product scope narrows to one flow** — a demo script a reviewer can
+run, rather than an abstraction a reviewer has to be talked through:
+
+```
+agentops-oss-helper <github-repo-url> [--issue N | --question "..."]
+```
+
+Paste a public GitHub repository URL, optionally with an issue number or a
+free-text question. The tool works off **that repository's own Issues and
+PRs** and **that repository's own docs/README**, and produces a grounded
+triage or answer draft with a citation behind every claim — or an explicit
+refusal when the evidence does not support one.
+
+**Local-first.** There is no hosted multi-tenant service behind this flow.
+A maintainer clones this repo, sets one environment variable, and points
+the CLI at their own repository. The deployed API (below) is a *second*,
+independent surface that exists to prove the backend deploys — it is not
+where this flow is expected to be consumed.
+
+"Here are five adapters, pick one" is not a demo. This is.
+
+### How the flow actually runs, step by step
+
+#### 1. Parse the URL
+
+Accept `https://github.com/<owner>/<repo>`, with or without `.git`, a
+trailing slash, or a trailing `/issues/<N>` (in which case `<N>` is taken
+as `--issue` unless one is passed explicitly). Anything else is rejected
+before any network call. `owner` and `repo` are what
+`GitHubIssueAdapter(owner, repo, token)` needs, and nothing else in the
+URL is used.
+
+#### 2. Acquire the repo's docs — by bulk download, not by API
+
+**Decision: fetch the repository's markdown in bulk (one shallow clone or
+one tarball), and use the GitHub REST API only for Issues and PRs.** This
+is not a preference; two independent facts force it.
+
+- **The retrieval math forces bulk acquisition.** `WikiRagAdapter.__init__`
+  reads every `*.md` in its directory and builds a corpus-wide document-
+  frequency table (`self._df`, `self._n_docs`) before any query runs. IDF
+  is *by definition* a property of the whole corpus. A per-query Contents
+  API fetch cannot produce it — you would be scoring against an IDF table
+  of one document. Bulk-first is a constraint of the algorithm already
+  shipped, not a shortcut.
+- **The constructor signature forces a local directory.**
+  `WikiRagAdapter(wiki_dir: str)` takes a path and globs it. An
+  API-sourced docs path would mean writing every blob to disk anyway — a
+  worse `git clone` — or writing a second adapter, which contradicts
+  Update 1's whole point.
+
+Cost comparison, for the record: enumerating a tree and fetching N blobs
+is N+1 REST calls against the same 5000/hour authenticated budget the
+issue search draws from, whereas a git fetch or a `codeload` tarball is
+one transaction that does not consume the REST quota at all.
+
+Conversely, Issues and PRs are **not in the git tree** — they exist only
+through the API, they are mutable, and they are queried rather than
+enumerated. No clone can supply them, and `GitHubIssueAdapter` is already
+written against `httpx`. The split is therefore forced on both sides.
+
+Two acquisition paths, same output directory:
+
+| Environment | Mechanism | Why |
+|---|---|---|
+| Local CLI (git present) | `git clone --depth 1 --filter=blob:none --sparse`, then `git sparse-checkout set README.md docs doc documentation CONTRIBUTING.md` | Smallest transfer on a large repo; blobs fetched only for the paths asked for |
+| Container / no git binary | `GET https://codeload.github.com/<owner>/<repo>/tar.gz/<ref>`, extracted to the same temp dir | One HTTP request, no `git` in the image, no `.git` directory left behind |
+
+**Flattening is required, and it is easy to get wrong.**
+`WikiRagAdapter` globs `*.md` **non-recursively**, and a real repository's
+documentation is nested (`docs/guide/install.md`). The materializer
+therefore walks the checkout and, for each `*.md`/`*.mdx` under the
+allowlisted roots, writes a flattened copy into one temp directory with
+path separators encoded into the stem (`docs__guide__install.md`). It keeps
+a stem → `(repo path, commit sha)` map so a citation can be rendered as
+`https://github.com/<owner>/<repo>/blob/<sha>/docs/guide/install.md`. That
+map is how the missing `EvidenceRef.uri` is supplied without changing the
+adapter.
+
+**Caps, stated up front.** The TF-IDF index is built in-process in pure
+Python and scoring is a linear scan over every document per query. That is
+appropriate at hundreds of documents and inappropriate at tens of
+thousands. The CLI refuses above a default cap (order of a few hundred
+markdown files / a few MB of text), raisable with `--max-docs`, with an
+explicit message naming the cap. A monorepo must fail loudly, not wedge.
+
+#### 3. Construct the two adapters
+
+- `WikiRagAdapter(wiki_dir=<flattened temp dir>)` — `source_kind="wiki"`.
+- `GitHubIssueAdapter(owner, repo, token)` — `source_kind="github-issue"`.
+  `token` falls back to `AGENTOPS_GITHUB_TOKEN`; unauthenticated works on
+  public repos at GitHub's much lower unauthenticated limit. **Read-only
+  scope only** — see ADR-0008.
+
+The same adapter covers Issues *and* PRs with no code change: GitHub's
+`/search/issues` returns both, and the adapter appends `filters` entries as
+search qualifiers, so `filters={"is": "pr"}` narrows to pull requests and
+`{"is": "issue"}` to issues.
+
+#### 4. Topology: a new one, and here is why the existing ones do not fit
+
+**Decision: add a new topology `oss_triage` (`graph_version =
+"oss-triage-v1"`). Do not reuse `planner_executor` for this flow.**
+
+Four specific blockers in the code as merged, not a general feeling that it
+would be cleaner:
+
+1. `run_planner_executor(adapter, task, *, document_client=None)` accepts
+   **exactly one** evidence client. This flow has two sources by
+   definition.
+2. `_execute_step` calls `client.search_docs(...)` / `client.read_document(...)`
+   — the *old* `DocumentClient` method names. PR #34's adapters expose
+   `search_evidence` / `read_evidence`. **They cannot be passed in as
+   `document_client` at all**; they do not satisfy that Protocol.
+3. `_PLAN_PROMPT` hardcodes the tool vocabulary
+   `search_docs, read_document, get_issue`, and `_execute_step`'s
+   `get_issue` branch raises `NotImplementedError` on purpose, normalizing
+   to `unsupported_capability`. The one plan step that would read an issue
+   is hardwired to fail.
+4. `run_topology(name, adapter, task)` has no parameter to forward a client
+   through, so the API path always gets a default `InMemoryDocumentClient()`
+   over `fixtures/docs/`.
+
+`graph/fixed.py` is worse for this purpose — it reads `fixtures/docs/`
+directly, as ADR-0007 already records.
+
+`oss_triage` is a `StateGraph` with four nodes and **one LLM call**:
+
+```
+ground_issue -> retrieve_prior_art -> retrieve_docs -> synthesize
+```
+
+- `ground_issue` — with `--issue N`, `GitHubIssueAdapter.read_evidence(str(N))`
+  supplies the question text; with `--question`, the text is used verbatim.
+  No LLM call.
+- `retrieve_prior_art` — `GitHubIssueAdapter.search_evidence(query, top_k)`
+  over the repo's own Issues and PRs. No LLM call.
+- `retrieve_docs` — `WikiRagAdapter.search_evidence(query, top_k)` then
+  `read_evidence` on each hit. No LLM call.
+- `synthesize` — one LLM call over both evidence blocks, each passage
+  labelled with its `source_kind` and `ref_id`, instructed to cite
+  `[source_kind:ref_id]` for every claim or emit the existing refusal
+  string.
+
+**Why simpler beats the planner here, as an argument rather than a
+preference.** With exactly two sources and a fixed question, there is no
+routing decision left for a planner to make — the plan is always "search
+both, read the top hits, synthesize". An LLM-authored plan would add one
+LLM call and a new failure mode (`_parse_plan` returning `[]` routes to
+`_empty_plan_node`, i.e. a blanket refusal caused by *parsing*, not by
+evidence) in order to produce a constant. One LLM call per invocation also
+makes the cost of a demo run predictable, which matters for something a
+reviewer runs against a live repository. ADR-0006's fixed-graph finding
+points the same way, though ADR-0007 correctly scopes that finding to the
+docs corpus.
+
+**Honest limitation, not a reversal.** `oss_triage` is a *baseline*, and it
+is the first data point for the per-source topology re-measurement ADR-0007
+demands — not a substitute for it. Comparing it against
+`planner_executor` is owed work, and it is blocked on two changes to that
+topology (accept an `EvidenceSourceAdapter`; derive the plan vocabulary
+from the registered adapters instead of hardcoding three names). Until
+that comparison runs, no claim of the form "the simple topology wins here"
+may be made.
+
+**One adapter change this flow genuinely requires.**
+`GitHubIssueAdapter.read_evidence` returns `data.get("body")` only — the
+issue's opening comment. A maintainer's actual context usually lives in the
+*thread*. The flow needs comment assembly via
+`GET /repos/{owner}/{repo}/issues/{n}/comments`, which the adapter does not
+call today. This is the one code change to PR #34's adapters that the
+flagship flow cannot be built without.
+
+**A trap that falls straight out of reading both adapters.** `score` means
+different things per source: GitHub's search relevance score is unbounded
+and opaque, `WikiRagAdapter`'s is a cosine similarity in `[0,1]`. **These
+must never be merge-sorted into one ranked list.** Retrieve top-k per
+adapter independently and present both blocks to the synthesizer, labelled
+by `source_kind`. Any future cross-source ranking needs a calibration step
+that does not exist.
+
+### This is how Pillar 1 runs — not a fourth pillar
+
+Update 1's §"Pillar 1 — Open Source Maintainer Helper Agent" describes the
+capability; this section is its concrete execution. Update 1's Pillar 1
+table maps roles onto adapters and names `planner_executor` as the
+topology; **that topology choice is superseded by `oss_triage` for this
+flow**, for the four coded reasons above. Nothing else in Pillar 1 changes.
+Pillars 2 and 3 are untouched: Pillar 2's groundedness and per-`source_kind`
+drift work now has a real two-source run to measure, and Pillar 3's
+draft-acceptance-rate metric is still unmeasured and still presented as a
+hypothesis with a named falsification test.
+
+### Deployment
+
+#### The backend/frontend split is a design property, not an implementation detail
+
+**The backend must be fully exercisable and demoable with no Streamlit
+involvement whatsoever.** The target audience for this portfolio is stated
+at the top of this document — *Main target: AI Agent / Applied AI
+Engineer*. Frontend polish demonstrates nothing to that reader. So the
+backend gets three independently sufficient verification surfaces, and the
+UI is a thin optional client of the first two:
+
+| Surface | How a reviewer exercises it | Needs Streamlit? |
+|---|---|---|
+| Test suite | `uv run pytest -q` — graph, adapters and API via `make_test_client()`; no server, no network | No |
+| HTTP contract | `curl` `POST /v1/runs` → poll `GET /v1/runs/{id}`; schema from FastAPI's own `/openapi.json` and `/docs` | No |
+| CLI | `agentops-oss-helper <url> --issue N` in-process — no API server either | No |
+
+To make that a *verified* property rather than a claim, two concrete
+changes are required:
+
+1. **`streamlit` must move out of `[project.dependencies]`** into
+   `[project.optional-dependencies] ui = [...]`. It is currently a hard
+   runtime dependency, so `uv sync --no-dev` installs it and "the backend
+   runs without the frontend" is untested. The API image is then built
+   without it, and the deploy smoke test below *passes in an image where
+   Streamlit is absent*. That is the falsifiable form of this design
+   property.
+2. **A console script must exist.** `pyproject.toml` has no
+   `[project.scripts]` at all today; the CLI needs
+   `agentops-oss-helper = "agentops_workbench.cli.oss_helper:main"`.
+
+#### Target: Fly.io, one container, SQLite on a volume
+
+**Decision: Fly.io.** The reasoning is specific to this application's duty
+cycle, which is unusual: near-zero traffic punctuated by long, expensive
+requests.
+
+- **Scale-to-zero matches the traffic.** `min_machines_running = 0` with
+  auto start/stop means an idle portfolio demo is billed for storage and
+  not much else. A platform that keeps a service warm bills continuously
+  for a service nobody is calling.
+- **It deploys the existing `docker/Dockerfile` unchanged.** `fly deploy`
+  builds a Dockerfile directly — no buildpack inference, and the image
+  that runs is the image the repo describes.
+- **`fly secrets set` is a first-class encrypted store** that maps 1:1 onto
+  the `AGENTOPS_*` environment variables `settings.py` already reads.
+- **Long requests survive.** The app's `POST /v1/runs` currently executes
+  the graph synchronously in-request (see the operational gaps below), so
+  proxy tolerance for slow responses is not a nice-to-have.
+
+**Runner-up: Railway**, and it is genuinely easier — GitHub-push deploys
+with almost no configuration, managed Postgres one click away. It loses on
+the one axis that matters most here: a Hobby service stays running, so an
+idle demo burns its included usage continuously. Recorded as the fallback
+if Fly's machine lifecycle proves more operational friction than it saves.
+
+**Rejected: a small VPS** (Hetzner-class, cheapest in dollars). It is the
+most expensive in *runbook*: TLS issuance and renewal, OS patching, an
+image registry, process supervision, and a rollback story written by hand.
+None of that demonstrates anything an AgentOps reviewer is grading, and all
+of it is work this project would then owe forever.
+
+**Rejected: a free tier that sleeps.** Free web tiers that spin down after
+inactivity impose a cold start measured in tens of seconds on the *first*
+request — precisely the request a reviewer makes — and free managed
+Postgres instances that expire after a trial window are disqualifying for a
+portfolio link that must still work months later.
+
+**Managed DB: none, deliberately.** Drop Postgres for the deployed demo and
+run **SQLite on a small Fly volume** (`AGENTOPS_DATABASE_URL=sqlite:////data/agentops.db`,
+which is already the shape of the Dockerfile's default). Justification: one
+writer process, append-mostly `Run` / `ToolCall` / `Usage` rows, and a demo
+dataset measured in kilobytes. A managed Postgres would roughly multiply
+the monthly bill to serve a database with exactly one client.
+`docker/docker-compose.yml` keeps Postgres as the local/dev and
+future-multi-writer story, so nothing is lost. If a managed DB is wanted
+later, the upgrade path is Fly Managed Postgres or a serverless Postgres
+whose own scale-to-zero matches this app's duty cycle.
+
+#### Realistic cost at demo scale
+
+Approximate, and the drivers are named because the figure depends on them:
+
+| Item | Approximate monthly cost | Depends on |
+|---|---|---|
+| 1 × shared-CPU machine, 512 MB, scale-to-zero | low single-digit USD | region; how often it wakes; how long each run keeps it awake |
+| 1 × small persistent volume (1–3 GB) | around a dollar or less | provisioned GB, billed per GB-month regardless of use |
+| Dedicated IPv4, if used | small fixed monthly charge; avoidable on shared IPv4 | whether a dedicated address is needed at all |
+| LLM spend | **cents** — measured: **$0.0124 for 24 runs** on `MiniMax-M3` (`experiments/held-out-v1/`) | runs per month; provider rates |
+
+**Roughly $2–6/month**, dominated by the machine and the volume rather than
+the model. Every number above except the LLM line is approximate and
+sensitive to region and usage; the LLM line is the one figure this project
+actually measured, so it is quoted as measured. Published platform pricing
+changes — re-check before quoting any of this in an interview.
+
+#### What `deploy.yml` would need to do
+
+Described precisely; not implemented in this PR.
+
+1. **Trigger**: `workflow_run` on `ci.yml` completing with
+   `conclusion == success` on `main`, plus `workflow_dispatch`. A
+   `workflow_run` gate rather than a `push` trigger, so a deploy can never
+   race a red test suite. Path-filtered to
+   `apps/agentops-workbench/**`.
+2. **Toolchain**: `superfly/flyctl-actions/setup-flyctl`, then
+   `flyctl deploy --remote-only` — the image builds on Fly's builder, so
+   Actions needs no Docker layer caching and no registry credentials.
+3. **Auth**: one repository secret, `FLY_API_TOKEN`. Scoped to the single
+   app, not an org-wide token.
+4. **Stamp the commit**: pass `--build-arg AGENTOPS_CODE_SHA=${{ github.sha }}`.
+   This closes a real gap — `api/server.py` reads
+   `os.environ.get("AGENTOPS_CODE_SHA", "dev-sha")`, so **every `Run` row
+   ever persisted says `dev-sha`**, and run provenance is the one thing
+   this project's own evaluation story cannot do without.
+5. **Application secrets are NOT set by the workflow.** They are set once,
+   out of band, with `flyctl secrets set`, so a compromised workflow cannot
+   read them back. Required: `AGENTOPS_JWT_SECRET` (**≥ 32 characters** —
+   `_lifespan` refuses to boot otherwise whenever `provider != local-fake`),
+   `AGENTOPS_MINIMAX_API_KEY`, and `AGENTOPS_GITHUB_TOKEN` (a fine-grained,
+   **read-only, public-repo-only** token with no write permission of any
+   kind).
+6. **Post-deploy smoke test**: run `scripts/smoke_deploy.sh $BASE_URL` and
+   fail the job on a non-zero exit; on failure, `flyctl releases rollback`.
+
+#### Operational gaps this target creates, and what closes each
+
+Each gap below is anchored to a fact in the current code, not to a generic
+checklist.
+
+- **There is no health endpoint.** `api/server.py` exposes `/v1/runs`,
+  `/v1/runs/{id}`, `/v1/runs/{id}/cancel`, `/v1/actions`,
+  `/_debug/retrieve` and `/_debug/metrics` — and nothing else. A platform
+  health check needs an unauthenticated, cheap route: spec
+  `GET /healthz` → `{status, code_sha, provider, db}`, doing one
+  `SELECT 1`, never calling the LLM, no auth. Without it the only
+  unauthenticated route is `/_debug/retrieve`, which *builds a retriever* —
+  exactly the wrong thing to poll every ten seconds, and dev-only by
+  intent.
+- **Synchronous execution collides with a proxy timeout.** `create_run`
+  calls `_execute_run` inline; the code comment "Synchronous execution for
+  MVP (Step 5 moves this to a job runner)" describes work that never
+  happened. A live `minimax` run can outlast a proxy's response budget, and
+  the reviewer then sees a gateway error for a run that actually
+  *succeeded*. **Decision: for the deployed target, `POST /v1/runs` returns
+  `202` with state `queued` and the reviewer polls `GET /v1/runs/{id}`** —
+  which is what the existing `queued → running → …` state machine and the
+  unused `worker/` module were built for. The local CLI is unaffected: it
+  does not use HTTP at all.
+- **Cold start plus acquisition, in the same request.** Scale-to-zero means
+  the first request pays machine boot, *then* repo acquisition, *then*
+  TF-IDF index construction. Three mitigations, all planned rather than
+  hoped: cache the flattened docs directory and its index on the volume
+  keyed by `(owner, repo, commit_sha)` so a second question about the same
+  repo skips acquisition entirely; return `202` immediately so the wall
+  clock lands in the client's poll loop instead of in a timeout; and keep
+  the `--max-docs` refusal so a monorepo fails fast.
+- **No subprocess-per-adapter cost applies to this flow.** Worth stating
+  because the question naturally arises: PR #34's adapters are **in-process**
+  Python objects. The subprocess lifecycle question belongs to PR #29's
+  `SubprocessDocumentClient`, a different code path that this flow does not
+  use. The only out-of-process cost here is the one-time clone/tarball
+  fetch, addressed by the cache above.
+- **Rollback rolls back the image, not the schema.**
+  `flyctl releases rollback` restores a previous image in one command. It
+  does not migrate down. **Rule: any Alembic migration must be
+  backward-compatible for one release** — add nullable columns, never drop
+  or rename a column in the same release as the code that stops using it.
+- **The trace redaction list has never seen a GitHub token.**
+  `observability/otel.py` redacts `api_key`, `authorization`, `bearer`,
+  `password`. `AGENTOPS_GITHUB_TOKEN` is a new credential class this flow
+  introduces; `token` must be added to that list *before* the flow ships,
+  not after a token appears in an exported span.
+- **Two independent rate limits now, and the adapter conflates one of
+  them.** GitHub REST allows on the order of 5000 requests/hour
+  authenticated versus 60/hour unauthenticated, and `/search/issues` has
+  its own much lower per-minute search budget on top. One CLI invocation is
+  a handful of calls, but a public URL lets anyone burn the shared token's
+  search quota. Plan: a per-principal throttle, and a fix to
+  `_raise_for_status`, which currently maps both `401` and `403` to
+  "permission denied" — conflating *bad credential* with *rate limited*.
+  Rate limiting must surface as its own condition carrying the reset time.
+- **A public endpoint that calls a paid LLM is a spend faucet.** This is
+  the single most important control, and the current code has none of it.
+  Plan: keep the existing JWT requirement, add a per-principal daily run
+  cap and a global ceiling computed from the `cost_usd` column that is
+  already persisted, and **default the deployed app to
+  `provider=local-fake`**, enabling `minimax` only for a scheduled demo
+  window.
+
+### Exit criteria for this iteration
+
+Both are testable by a reviewer, and both are recorded in
+[`phases/08-deployable-mvp/index.md`](../../phases/08-deployable-mvp/index.md).
+
+**CLI flow.** With a clone of this repository and **one** environment
+variable set (`AGENTOPS_GITHUB_TOKEN`), a reviewer runs
+`uv run agentops-oss-helper https://github.com/<owner>/<repo> --issue <N>`
+against a real public repository and gets a draft in which every claim
+carries at least one `[source_kind:ref_id]` citation resolving to an
+`EvidenceRef` returned during that run — or the explicit refusal string —
+plus a JSON sidecar under `runs/<run_id>/` recording repo, commit SHA,
+issue number, every `EvidenceRef`, token usage and latency. Required
+negatives: issues-disabled repo → `unsupported_capability`, not a crash;
+zero-markdown repo → explicit refusal, not an ungrounded answer;
+`AGENTOPS_PROVIDER=local-fake` runs the whole flow with no LLM key, and
+`--offline-fixtures` runs it with no network at all, so CI can execute it.
+
+**Deployment.** `GET https://<app>.fly.dev/healthz` returns 200 with
+`code_sha` equal to the deployed commit, and `scripts/smoke_deploy.sh
+$BASE_URL` mints a JWT, posts a `oss-triage-v1` run under
+`provider=local-fake`, polls to a terminal state within 60 seconds, asserts
+a non-empty answer and at least one persisted `ToolCall`, and exits
+non-zero otherwise — **with `streamlit` absent from the image**, and with
+no Streamlit process involved at any point.
+
+### Out of scope for this iteration
+
+Unchanged from Update 1, plus: no multi-tenant authentication for the CLI
+flow, no write-back of any kind to the target repository (no comments, no
+labels, no PRs — read-only against GitHub), no private-repository support
+in the flagship flow, and no autoscaling, multi-region or Kubernetes story.
+See [ADR-0008](../../apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md).
+
 ## User Story and Scope
 
 An engineering support user submits a repository issue. The system retrieves versioned documentation, asks for clarification when necessary, proposes a supported answer and optionally creates a ticket draft. Publishing occurs only to a local mock ticket service after server-validated approval.
