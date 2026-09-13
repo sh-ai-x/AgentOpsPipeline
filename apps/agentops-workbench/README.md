@@ -3,10 +3,27 @@
 > Lives at `apps/agentops-workbench/` inside `sh-ai-x/AgentOpsPipeline`.
 > All commands below assume you are in this directory.
 
+> **Pivot (2026-09-13):** the portfolio narrative is retargeted from
+> generic customer-support ticketing to **developer-tooling / open-source
+> maintainer automation** — the domain the author can actually judge and
+> defend. The evidence-retrieval layer is generalizing from one hardcoded
+> document corpus into a general **Adapter pattern**
+> (`EvidenceSourceAdapter`) so the same agent can point at a Wiki, security
+> logs, GitHub Issues, or AI-incident data depending on deployment, plus a
+> ticket-ledger facade proving the pattern also covers the original
+> ticketing use case with zero new domain logic. Full design:
+> [`../../docs/proposals/agentops-workbench-proposal.md`](../../docs/proposals/agentops-workbench-proposal.md)
+> and [`docs/adr/0007-evidence-source-adapter-pattern.md`](docs/adr/0007-evidence-source-adapter-pattern.md).
+> **Status: design + adapter implementation are in open PRs, not yet
+> merged** — everything below this note describes what is currently on
+> `main`, which still reflects the original ticketing flow end-to-end.
+
 A support-operations agent that turns a software issue into a grounded
 answer and an approval-gated ticket draft, plus an experiment workbench
 that compares prompt / topology / tool-integration choices on a 30-case
-human-reviewed benchmark.
+human-reviewed benchmark. (See the pivot note above — this description is
+what's actually shipped on `main` today; it is being superseded, not
+deleted, as the adapter-pattern work lands.)
 
 ## Quickstart
 
@@ -108,6 +125,8 @@ export AGENTOPS_PRICING_JSON='{"my-fine-tune":{"input_per_1m":1.20,"output_per_1
 
 ## Architecture
 
+Current (`main`, ticketing flow — unchanged by the pivot below):
+
 ```
 task -> [retrieve] -> [classify] -> (answer | refuse | clarify)
                                        |
@@ -120,6 +139,31 @@ task -> [retrieve] -> [classify] -> (answer | refuse | clarify)
                                        v
                               publish_ticket (mock ledger)
 ```
+
+**Planned (ADR-0007, in open PRs — not yet wired into the graph):** the
+`[retrieve]` step's single hardcoded document corpus generalizes into a
+pluggable `EvidenceSourceAdapter` — the graph asks for evidence, an
+adapter answers it, and which adapter is live is a deployment choice, not
+a code branch:
+
+```
+task -> [retrieve via EvidenceSourceAdapter] -> [classify] -> ...
+              |
+              +-- WikiRagAdapter        (internal/personal wiki, TF-IDF RAG)
+              +-- GitHubIssueAdapter    (GitHub Issues, real API)
+              +-- SecurityLogAdapter    (structured logs, window/filters)
+              +-- IncidentLogAdapter    (timeout/rate-limit aggregates)
+              +-- TicketSystemAdapter   (facade over the existing mock ledger --
+                                          proves the pattern covers the ORIGINAL
+                                          ticketing use case too, no new domain logic)
+```
+
+Adapters live in `src/agentops_workbench/adapters/` once that PR merges;
+`graph/planner_executor.py`/`graph/single_agent.py` still call
+`DocumentClient` directly today. Migrating the graph onto the adapter
+interface is deliberately a separate, later step (topology-per-adapter
+budget/latency tradeoffs need their own decision) — see ADR-0007's
+"Consequences" for what it does and doesn't settle yet.
 
 - **LangGraph** (`langgraph==1.2.11`): fixed graph (default), single-agent and bounded planner/executor variants behind a single `run_topology(name, ...)` registry (ADR-0006 ships the fixed graph)
 - **MCP** (`mcp==2.2.0`, spec `2026-07-28`): custom document server over stdio + pinned `@modelcontextprotocol/server-filesystem` (fixture-only scope)
@@ -147,6 +191,9 @@ enforced before execution.
 
 ```
 src/agentops_workbench/
+  adapters/{base,wiki_rag,security_log,incident_log,github_issue,ticket_system}.py
+                             # EvidenceSourceAdapter pattern (ADR-0007, open PR --
+                             # NOT yet imported by graph/**, see Architecture above)
   api/server.py              # FastAPI + JWT
   benchmark/{scorers,load}.py
   db/{models,session}.py
@@ -161,7 +208,7 @@ docs/
   RUNBOOK.md                 # bring up + clear ledger + read trace
   EVIDENCE_CARD.md           # what we built + what we measured
   demo.md                    # 5-minute demo script
-  adr/0001..0006-*.md        # design decisions
+  adr/0001..0007-*.md        # design decisions (0007 = evidence-source adapters, open PR)
 fixtures/
   cases/{dev,val,held_out,pilot}/case-*.json
   docs/doc-001..008-*.md
