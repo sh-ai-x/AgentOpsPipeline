@@ -18,6 +18,14 @@
 > been refreshed. See
 > [`../apps/agentops-workbench/docs/EVIDENCE_CARD.md`](../apps/agentops-workbench/docs/EVIDENCE_CARD.md)
 > for the shipped summary.
+>
+> **Amended 2026-09-13.** "All seven phases implemented and merged" above
+> refers to Phases **0–6** and is left as written; read it with
+> [`build-report.md`](build-report.md), which finds only 2 of 7 acceptance
+> criteria cleanly met. A new **Phase 7** was added by the portfolio pivot
+> to open-source maintainer tooling (proposal §"Pivot (2026-09-13)",
+> [ADR-0007](../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md))
+> and is **not started**.
 
 ## Phases
 
@@ -30,10 +38,20 @@
 | 4 | [04-topology-experiments](04-topology-experiments/) | Topology variants + planner/executor | `step5.md` | 1.0 | Selection follows measured utility; a simpler workflow may win |
 | 5 | [05-delivery](05-delivery/) | OTel, regression, Docker Compose, runbook | `step6.md` | 1.5 | A clean setup works; seeded regression fails CI; traces do not expose synthetic secrets |
 | 6 | [06-held-out-portfolio](06-held-out-portfolio/) | Held-out evaluation + evidence card + demo | `step7.md` | 1.0 | A reviewer can reproduce an offline failure and inspect the basis for the shipping decision |
+| 7 | [07-adapter-pattern-pivot](07-adapter-pattern-pivot/) | Evidence-source adapter generalization + OSS-maintainer pillars | *(no `.dev-kit` step plan — post-pivot, planned in the proposal)* | 2.0 | A run against a GitHub issue returns a draft whose every citation resolves to an `EvidenceRef` from a registered adapter, with the docs-corpus suite passing unchanged and `retrieval_recall` reported per `source_kind` |
 
 Phase numbers are 0-indexed (they match the proposal); the step-plan files are
 1-indexed (`step1.md` = Phase 0). Estimates are the original plan values, not
 measured effort.
+
+**Phase 7 is post-pivot and not yet started.** It is numbered into the same
+0-indexed sequence because it continues the same proposal and the same
+codebase — the pivot amends the narrative, not the architecture. It has no
+`.dev-kit/round-1/phases/build/step<N>.md` ancestor (that planning round
+covered steps 1–7 = Phases 0–6 only), so it carries no
+`step<N>-output.json`; its plan lives in
+[`../docs/proposals/agentops-workbench-proposal.md`](../docs/proposals/agentops-workbench-proposal.md)
+§"Phase 7" and [ADR-0007](../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md).
 
 ## Source of truth
 
@@ -116,7 +134,8 @@ describe how the agent runs, not the monorepo layout). Project-level index:
 - [ADR-0003 Provider abstraction](../apps/agentops-workbench/docs/adr/0003-provider-abstraction.md) — `LLMAdapter`; provider allow-list; cost cap
 - [ADR-0004 Dataset separation](../apps/agentops-workbench/docs/adr/0004-dataset-separation.md) — 18/6/6 frozen split
 - ADR-0005 — *tombstone*, see [`../docs/adr/0005-runtime-safety.md`](../docs/adr/0005-runtime-safety.md) (absorbed into ADR-0003)
-- [ADR-0006 Topology](../apps/agentops-workbench/docs/adr/0006-topology.md) — fixed graph as the default
+- [ADR-0006 Topology](../apps/agentops-workbench/docs/adr/0006-topology.md) — fixed graph as the default (scoped to `DocsCorpusAdapter` by ADR-0007)
+- [ADR-0007 Evidence-source adapter pattern](../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md) — `DocumentClient` → `EvidenceSourceAdapter`; wiki / GitHub-issue / security-log / incident-log adapters (2026-09-13)
 
 ## Status
 
@@ -139,6 +158,18 @@ describe how the agent runs, not the monorepo layout). Project-level index:
   stale until re-run. (2) The substring-match task scorer is also
   conservative. (3) `EVIDENCE_CARD.md`'s tool/test counts were corrected
   2026-09-13 (2 real tools, not 5; 177 tests, not 144).
+- **Phase 7 (added 2026-09-13, not started):** the portfolio narrative
+  pivoted from support-operations to open-source maintainer tooling; the
+  evidence layer generalizes from a single `DocumentClient` over
+  `fixtures/docs/` to an `EvidenceSourceAdapter` Protocol with wiki /
+  GitHub-issue / security-log / incident-log adapters. Architecture
+  (LangGraph topologies, MCP tool execution, FastAPI surface, benchmark
+  harness) is unchanged. Planning only so far — no code. See
+  [`07-adapter-pattern-pivot/index.md`](07-adapter-pattern-pivot/index.md),
+  [ADR-0007](../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md),
+  and proposal §"Pivot (2026-09-13)". Note that ADR-0007 scopes ADR-0006's
+  fixed-graph selection to the docs corpus, so the shipping topology is an
+  open question per evidence source.
 
 See [`../apps/agentops-workbench/docs/EVIDENCE_CARD.md`](../apps/agentops-workbench/docs/EVIDENCE_CARD.md)
 for the shipped summary and
