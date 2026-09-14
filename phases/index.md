@@ -5,10 +5,17 @@
 > artefacts under `apps/agentops-workbench/`. This file is the root index;
 > per-phase detail lives in `phases/<NN-slug>/index.md`.
 >
-> **Status: all seven phases are implemented and merged.** The workbench was
-> imported into this monorepo in PR #8 (`feat/agentops-workbench`); the live
-> held-out and 3-prompt experiments have been run against `provider=minimax`
-> (`MiniMax-M3`). See
+> **Status: all seven phases were merged as surface, not as satisfied
+> acceptance criteria.** [`build-report.md`](build-report.md) is the
+> authoritative status — it found 2 of 7 cleanly met on first audit
+> (2026-09-11); PR #20/#21 (2026-09-13) closed the root-cause tool-dispatch
+> stub for the `planner_executor` topology, moving several steps from "fully
+> unmet" to "partial," but none has been re-verified as a clean **yes** yet,
+> and the held-out re-run is still pending. Read `build-report.md` before
+> trusting any phase-complete claim in this file. The workbench was imported
+> into this monorepo in PR #8 (`feat/agentops-workbench`); the live held-out
+> and 3-prompt experiment *numbers* below predate PR #20/#21 and have not
+> been refreshed. See
 > [`../apps/agentops-workbench/docs/EVIDENCE_CARD.md`](../apps/agentops-workbench/docs/EVIDENCE_CARD.md)
 > for the shipped summary.
 >
@@ -85,21 +92,28 @@ ever emitted. [`build-report.md`](build-report.md) **audits the merged tree
 against each step's acceptance criterion** and each phase carries a
 `phases/<NN-slug>/step<N>-output.json` with its verdict.
 
-Result: **2 of 7 acceptance criteria are cleanly met** (step 1 bootstrap, step 4
-dataset). Steps 2, 3, 5, 6 ship a real surface but do not satisfy their AC as
-written; step 7 is reproducible but rests on zero primary-metric signal. The
-common cause: the agent never issues tool calls — `graph/single_agent.py` and
-`graph/planner_executor.py` both carry `# Tool dispatch is a stub for MVP; step
-6 wires real MCP calls`, and step 6 never did that wiring. So the MCP servers
-(step 3) are unreachable from a run, the topology comparison (step 5) is between
-tool-less generators, and every held-out run (step 7) reports
-`tool_correctness: 0.0`.
+Result (2026-09-11): **2 of 7 acceptance criteria are cleanly met** (step 1
+bootstrap, step 4 dataset). Steps 2, 3, 5, 6 ship a real surface but do not
+satisfy their AC as written; step 7 is reproducible but rests on zero
+primary-metric signal. The common cause: the agent never issues tool calls —
+`graph/single_agent.py` and `graph/planner_executor.py` both carried
+`# Tool dispatch is a stub for MVP; step 6 wires real MCP calls`.
 
-Gates re-run 2026-09-11: `uv run pytest -q` → 153 passed, 1 failed (154
-collected); `uv run ruff check .` → clean. The one failure
-(`test_has_insecure_jwt_secret_flags_default_and_short`) is a test-isolation
-defect (`Settings()` reads a local `.env` with a strong `AGENTOPS_JWT_SECRET`)
-and passes in clean CI. See [`build-report.md`](build-report.md).
+**Update 2026-09-13:** [PR #20](https://github.com/sh-ai-x/AgentOpsPipeline/pull/20)
++ [PR #21](https://github.com/sh-ai-x/AgentOpsPipeline/pull/21) removed
+`planner_executor.py`'s half of that stub — it now genuinely calls
+`search_docs`/`read_document` and honestly reports `get_issue` as
+unsupported (no backing data source exists for it) instead of no-op'ing.
+`single_agent.py`'s stub is untouched. Net: steps 3/5/6 moved from "fully
+unmet" to "real for one of two topologies, not yet re-verified against
+their AC"; the held-out re-run (step 7) has not happened. Full breakdown,
+including what's still open, in [`build-report.md`](build-report.md).
+
+Gates re-run 2026-09-13 on `main`: `uv run pytest -q` → **177 passed, 0
+failed**. (2026-09-11 baseline: 153 passed, 1 failed of 154 collected — that
+one failure was a `.env`-presence test-isolation artifact, not reproducing
+in a fresh worktree.) `uv run ruff check .` → 5 pre-existing findings, all in
+`scripts/*.py`, unrelated to #20/#21. See [`build-report.md`](build-report.md).
 
 ## Pins (project-wide)
 
@@ -140,16 +154,25 @@ describe how the agent runs, not the monorepo layout). Project-level index:
 
 ## Status
 
-- **Phases 0–6:** merged into `apps/agentops-workbench/` via PR #8 — but the [`build-report.md`](build-report.md) audit finds only steps 1 and 4 fully satisfy their acceptance criteria; steps 2/3/5/6 have unwired tool execution and step 7 rests on zero task-success signal.
-- **Local gates (re-run 2026-09-11):** `uv run pytest` 153/154 (1 env-only failure), `uv run ruff check` clean — full breakdown in [`build-report.md`](build-report.md).
-- **Live experiments:** held-out (24 runs) and 3-prompt comparison (18 runs) run
-  against `MiniMax-M3` — 42 runs, ~$0.03 total. `v3_minimal` published as the
-  unsuccessful change per the proposal.
-- **Known limitations:** (1) tool execution is stubbed in the `single_agent` /
-  `planner_executor` topologies (`# stub for MVP`), so no agent run issues a tool
-  call and `tool_correctness` is 0/24 on the held-out set. (2) The substring-match
-  task scorer is also conservative. (3) `EVIDENCE_CARD.md` overstates the tool
-  count (5 claimed, 2 real) and the test count (144 claimed, 154 collected).
+- **Phases 0–6:** merged into `apps/agentops-workbench/` via PR #8 — the
+  [`build-report.md`](build-report.md) audit found only steps 1 and 4 fully
+  satisfy their acceptance criteria (2026-09-11); PR #20/#21 (2026-09-13)
+  closed the `planner_executor` half of the tool-execution gap behind
+  steps 2/3/5/6, `single_agent`'s half is still open, and step 7 still
+  needs a re-run — see `build-report.md` for the current per-step verdicts.
+- **Local gates (re-run 2026-09-13, `main` post PR #20/#21):** `uv run pytest`
+  177/177 passed, `uv run ruff check` 5 pre-existing findings (unrelated,
+  `scripts/*.py`) — full breakdown in [`build-report.md`](build-report.md).
+- **Live experiments:** held-out (24 runs) and 3-prompt comparison (18 runs) ran
+  against `MiniMax-M3` — 42 runs, ~$0.03 total — **before** PR #20/#21;
+  `v3_minimal` published as the unsuccessful change per the proposal. Not
+  yet re-run against the current tool-wired `planner_executor`.
+- **Known limitations:** (1) tool execution is now real for `planner_executor`
+  (PR #21) but still stubbed in `single_agent` (`# stub for MVP`), so the
+  held-out `tool_correctness` numbers above (0/24) predate the fix and are
+  stale until re-run. (2) The substring-match task scorer is also
+  conservative. (3) `EVIDENCE_CARD.md`'s tool/test counts were corrected
+  2026-09-13 (2 real tools, not 5; 177 tests, not 144).
 - **Phase 7 (added 2026-09-13, partially built):** the portfolio narrative
   pivoted from support-operations to open-source maintainer tooling; the
   evidence layer generalizes from a single `DocumentClient` over
