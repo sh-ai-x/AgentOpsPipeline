@@ -17,6 +17,12 @@ whatever directory a deployment's wiki export lands in.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..mcp import DocRef
+
+
 import math
 import re
 from collections import Counter
@@ -63,6 +69,24 @@ class WikiRagAdapter:
         for doc_id, counts in self._doc_term_counts.items():
             vec = {term: tf * self._idf(term) for term, tf in counts.items()}
             self._doc_norms[doc_id] = math.sqrt(sum(w * w for w in vec.values())) or 1.0
+    # --- DocumentClient compat shims (for graph/*_*.py which still calls
+    # search_docs/read_document by the legacy names) ---
+    def search_docs(self, query: str, top_k: int = 5) -> list[DocRef]:
+        """Compat shim: delegate to search_evidence, return DocRef-shaped results."""
+        ev = self.search_evidence(query, top_k=top_k)
+        return [
+            DocRef(doc_id=r.ref_id, title=r.title, score=r.score)
+            for r in ev
+        ]
+
+    def read_document(self, doc_id: str, offset: int = 0, limit: int = 2000) -> str:
+        """Compat shim: delegate to read_evidence."""
+        return self.read_evidence(doc_id, offset=offset, limit=limit)
+
+    def list_filesystem_files(self) -> list[str]:
+        """Compat shim: WikiRagAdapter doesn't index filesystem files; return empty."""
+        return []
+
 
     def _idf(self, term: str) -> float:
         # Smoothed IDF: ln((1 + N) / (1 + df)) + 1 -- never zero, never

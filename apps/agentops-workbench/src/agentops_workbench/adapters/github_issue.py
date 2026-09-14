@@ -19,6 +19,12 @@ its own.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..mcp import DocRef
+
+
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -73,6 +79,28 @@ class GitHubIssueAdapter:
         self._repo = repo
         self._token = token if token is not None else os.environ.get("AGENTOPS_GITHUB_TOKEN")
         self._client = client or httpx.Client(base_url=base_url, timeout=timeout)
+    # --- DocumentClient compat shims (for graph/*_*.py legacy callers) ---
+    def search_docs(self, query: str, top_k: int = 5) -> list[DocRef]:
+        """Compat shim: delegate to search_evidence, return DocRef-shaped results.
+
+        Issues don't have a relevance score in the GitHub REST API, so we
+        return a synthetic 1.0 score for every hit -- a real relevance
+        signal is not available for this source.
+        """
+        ev = self.search_evidence(query, top_k=top_k)
+        return [
+            DocRef(doc_id=r.ref_id, title=r.title, score=r.score)
+            for r in ev
+        ]
+
+    def read_document(self, doc_id: str, offset: int = 0, limit: int = 2000) -> str:
+        """Compat shim: delegate to read_evidence."""
+        return self.read_evidence(ref_id=doc_id, offset=offset, limit=limit)
+
+    def list_filesystem_files(self) -> list[str]:
+        """Compat shim: GitHubIssueAdapter is not a filesystem source; return empty."""
+        return []
+
 
     def _headers(self) -> dict[str, str]:
         headers = {
