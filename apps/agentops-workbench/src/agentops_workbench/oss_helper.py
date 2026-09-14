@@ -368,10 +368,17 @@ def run_oss_helper(
         gh_query = gh_query[:256]
 
     wiki_query = question or ""
-    if issue is not None and not wiki_query:
+    if not wiki_query and issue is not None:
         # The wiki side also benefits from a hint when there's no free-text
         # question -- just the issue number, no body.
         wiki_query = f"issue {issue}"
+    if not wiki_query:
+        # No question, no issue number -- the user just dropped a URL.
+        # Search the corpus with the repo name itself as a generic
+        # anchor so we still surface SOMETHING (README/CHANGELOG/AGENTS
+        # etc. usually mention the project name). TF-IDF scoring will
+        # naturally bring top-level project docs to the top.
+        wiki_query = f"{repo}"
 
     wiki_evs = wiki.search_evidence(wiki_query, top_k=5) if wiki_query else []
     try:

@@ -216,6 +216,55 @@ def test_run_oss_helper_assembles_evidence_and_calls_llm(tmp_path, monkeypatch) 
     assert result.duration_ms >= 0
 
 
+def test_run_oss_helper_wiki_searches_with_repo_name_when_no_question(
+    tmp_path, monkeypatch
+) -> None:
+    """Real-user-reported: pasting a GitHub URL with no question and no
+    issue returned `0 doc refs` (and the LLM said 'no direct match').
+    Root cause: my wiki side skipped the search entirely when `question`
+    was empty. Fix: fall back to the repo name itself as a generic
+    anchor so the bare-URL flow always surfaces SOMETHING (README,
+    CHANGELOG, AGENTS, etc.) -- TF-IDF naturally ranks top-level project
+    docs first."""
+    repo = tmp_path / "owner" / "big-repo"
+    repo.mkdir(parents=True)
+    (repo / "README.md").write_text("# big-repo\n")
+    (repo / "CHANGELOG.md").write_text("# changelog\n")
+    from agentops_workbench.adapters import wiki_rag
+    orig_init = wiki_rag.WikiRagAdapter.__init__
+    monkeypatch.setattr(
+        wiki_rag.WikiRagAdapter, "__init__",
+        lambda self, wiki_dir: orig_init(self, wiki_dir=str(repo)),
+    )
+
+    from agentops_workbench.adapters import github_issue
+
+    class _Noop(github_issue.GitHubIssueAdapter):
+        def search_evidence(self, q, top_k=5, window=None, filters=None): return []
+        def read_evidence(self, ref_id, **kw): return ""
+
+    monkeypatch.setattr(github_issue, "GitHubIssueAdapter", _Noop)
+    import agentops_workbench.oss_helper as _oh
+    monkeypatch.setattr(_oh, "GitHubIssueAdapter", _Noop)
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.parse_repo_url",
+        lambda url: ("owner", "big-repo", None),
+    )
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.bulk_acquire_repo_docs",
+        lambda owner, repo, **kw: (repo, []),
+    )
+
+    result = run_oss_helper(
+        "https://github.com/owner/big-repo",
+        adapter=_ScriptedAdapter(),
+    )
+    # No question and no issue -- but wiki should still find SOMETHING.
+    assert len(result.wiki_refs) >= 1, (
+        f"bare-URL flow returned 0 wiki refs: {result.wiki_refs!r}"
+    )
+
+
 def test_run_oss_helper_handles_bad_url() -> None:
     from agentops_workbench.oss_helper import run_oss_helper
     adapter = _ScriptedAdapter()
