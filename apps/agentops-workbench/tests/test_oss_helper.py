@@ -284,7 +284,10 @@ def test_run_oss_helper_truncates_long_question_for_gh_256_limit(
         question=long_q,
         adapter=adapter,
     )
-    assert result.warnings == []
+    # No 256-char-related warnings (the missing-token warning is OK).
+    assert not any("256" in w for w in result.warnings), (
+        f"unexpected 256-char warnings: {result.warnings!r}"
+    )
     assert len(received_qs) == 1
     assert len(received_qs[0]) <= 256, (
         f"GitHub search query exceeded 256-char limit: {len(received_qs[0])} chars"
@@ -493,6 +496,56 @@ def test_run_oss_helper_explicit_token_overrides_env(
     run_oss_helper("https://github.com/o/r", adapter=_ScriptedAdapter(),
                    github_token="ghp_explicit")
     assert captured == ["ghp_explicit"]
+
+
+def test_run_oss_helper_warns_about_missing_token(
+    tmp_path, monkeypatch
+) -> None:
+    """Real-user-reported: 'facebook/react + question=useState' returned
+    0 issue refs even though React has thousands of useState-related
+    issues. Root cause: unauthenticated GitHub API search gets
+    'Validation Failed' (the same error as private repos) for large
+    public repos with high spam-detection risk. The user has no way to
+    tell that 'no matches' means 'you need a token' vs 'this repo has
+    no matching issues'. Fix: surface a warning naming the env var when
+    no token is available."""
+    repo = tmp_path / "owner" / "big-public-repo"
+    repo.mkdir(parents=True)
+    (repo / "README.md").write_text("# big\n")
+    from agentops_workbench.adapters import wiki_rag
+    orig_init = wiki_rag.WikiRagAdapter.__init__
+    monkeypatch.setattr(
+        wiki_rag.WikiRagAdapter, "__init__",
+        lambda self, wiki_dir: orig_init(self, wiki_dir=str(repo)),
+    )
+    from agentops_workbench.adapters import github_issue
+
+    class _Stub(github_issue.GitHubIssueAdapter):
+        def search_evidence(self, q, top_k=5, window=None, filters=None):
+            return []
+        def read_evidence(self, ref_id, **kw): return ""
+
+    monkeypatch.setattr(github_issue, "GitHubIssueAdapter", _Stub)
+    import agentops_workbench.oss_helper as _oh
+    monkeypatch.setattr(_oh, "GitHubIssueAdapter", _Stub)
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.parse_repo_url",
+        lambda url: ("facebook", "react", None),
+    )
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.bulk_acquire_repo_docs",
+        lambda owner, repo, **kw: (repo, []),
+    )
+    monkeypatch.delenv("AGENTOPS_GITHUB_TOKEN", raising=False)
+
+    result = run_oss_helper(
+        "https://github.com/facebook/react",
+        adapter=_ScriptedAdapter(),
+    )
+    assert any("AGENTOPS_GITHUB_TOKEN" in w for w in result.warnings), (
+        f"expected a warning naming the missing-token env var, got "
+        f"{result.warnings!r}"
+    )
 
 
 def test_run_oss_helper_does_not_double_prefix_repo_qualifier(

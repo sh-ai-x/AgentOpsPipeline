@@ -285,11 +285,24 @@ def run_oss_helper(
     # Without it, GitHub returns 422 for private repos (not even a 403 --
     # the search endpoint refuses to confirm the repo exists) and the user
     # sees a "no match" page that was actually a permission error.
+    # For public-but-large repos (facebook/react, microsoft/typescript,
+    # etc.) unauthenticated requests also hit this exact "Validation
+    # Failed" error -- the search endpoint has a stricter rate limit and
+    # rejects anonymous queries against high-spam-risk repos. Surfacing
+    # the missing-token state as a warning lets the user fix the actual
+    # cause rather than chase a non-existent issue list.
     effective_token = (
         github_token
         if github_token is not None
         else os.environ.get("AGENTOPS_GITHUB_TOKEN")
     )
+    if effective_token is None:
+        warnings.append(
+            "AGENTOPS_GITHUB_TOKEN is not set -- unauthenticated GitHub API "
+            "search may fail with 'Validation Failed' for popular or "
+            "private repos. Set the env var (or pass github_token=...) "
+            "to enable issue/PR search."
+        )
     issue_adapter = GitHubIssueAdapter(
         owner=owner, repo=repo, token=effective_token,
     )
