@@ -72,3 +72,6 @@ target/
 logs/
 # <<< dev-kit <<<
 .worktrees/
+
+# Telemetry / measurement (local-only)
+.dev-kit/trace/

@@ -353,8 +353,21 @@ button:disabled { background: var(--muted); cursor: progress }
          font-size: 13px; border-left: 3px solid #f59e0b }
 .section { background: white; border: 1px solid var(--border); border-radius: 10px;
           padding: 20px; margin: 16px 0 }
-.section-title { font-size: 11px; font-weight: 600; text-transform: uppercase;
-                letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px }
+.section-title { font-size: 15px; font-weight: 700; color: var(--fg);
+                margin: 0 0 14px; padding-bottom: 8px;
+                border-bottom: 1px solid var(--border) }
+.section-title .count { color: var(--muted); font-weight: 500; font-size: 13px;
+                    margin-left: 6px; padding: 2px 8px;
+                    border: 1px solid var(--border); border-radius: 999px;
+                    vertical-align: 1px }
+.banner-auth { background: #fef2f2; color: #991b1b;
+               padding: 14px 18px; border-radius: 8px; margin: 16px 0;
+               font-size: 14px; border: 1px solid #fca5a5;
+               border-left: 4px solid #dc2626 }
+.banner-auth strong { font-weight: 600 }
+.banner-auth code { background: rgba(0,0,0,0.06); padding: 1px 6px;
+                  border-radius: 3px; font-family: ui-monospace, monospace;
+                  font-size: 13px }
 .ref-list { list-style: none; padding: 0; margin: 0 }
 .ref-list li { padding: 10px 0; border-bottom: 1px solid var(--border);
               display: flex; gap: 10px; align-items: flex-start }
@@ -372,7 +385,12 @@ button:disabled { background: var(--muted); cursor: progress }
 .answer { white-space: pre-wrap; background: var(--code-bg); padding: 16px;
           border-radius: 8px; font: 14px/1.55 ui-monospace, monospace;
           border: 1px solid var(--border); margin: 0 }
-.empty { color: var(--muted); font-style: italic; padding: 12px 0 }
+.empty { color: var(--muted); padding: 16px;
+          background: #f9fafb; border: 1px dashed var(--border);
+          border-radius: 6px; text-align: center; font-size: 13px }
+.empty code { background: rgba(0,0,0,0.05); padding: 1px 5px;
+            border-radius: 3px; font-family: ui-monospace, monospace;
+            font-size: 12px }
 .loading { display: inline-block; padding: 9px 18px; background: var(--muted);
            color: white; border-radius: 6px; opacity: 0.7;
            font: 14px/1 inherit; font-weight: 500 }
@@ -439,6 +457,14 @@ async def oss_helper_run(
     return HTMLResponse(_render_oss_helper_report(repo_url, result))
 
 
+def _title(label: str, count: int) -> str:
+    """Section title with a count badge."""
+    return (
+        f'<div class="section-title">{label}'
+        f'<span class="count">{count}</span></div>'
+    )
+
+
 def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) -> str:
     """Render the TriageResult as HTML. Inline-only -- no client-side JS,
     no external assets, no Streamlit dependency."""
@@ -463,6 +489,28 @@ def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) ->
     issue_n = result.issue_number
     issue_label = f" &middot; focused on issue #{issue_n}" if issue_n else ""
 
+    # If GitHub auth was missing OR the search itself failed, surface a
+    # prominent banner so the user knows the 0-issue-refs result was a
+    # permission/availability problem, not an empty repo. (Per ADR-0008
+    # / phase 8 exit criterion 2: visible failure modes for a triage tool.)
+    auth_warning = next(
+        (w for w in result.warnings
+         if "AGENTOPS_GITHUB_TOKEN" in w or "Validation Failed" in w
+         or "github issues search failed" in w.lower()),
+        None,
+    )
+    if auth_warning:
+        banner = (
+            '<div class="banner-auth">'
+            '<strong>GitHub auth required for issue/PR search.</strong><br>'
+            'Set <code>AGENTOPS_GITHUB_TOKEN</code> in the server '
+            'environment, or pass <code>github_token=...</code> to the '
+            f'flow.<br><em style="font-size:12px;opacity:0.85">{_html.escape(auth_warning)}</em>'
+            '</div>'
+        )
+    else:
+        banner = ""
+
     meta_row = (
         f'<div class="meta-row">'
         f'<span class="meta-chip">docs: <strong>{len(result.wiki_refs)}</strong></span>'
@@ -475,7 +523,7 @@ def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) ->
 
     answer_section = (
         '<section class="section">'
-        '<h3 class="section-title">Answer</h3>'
+        f'{_title("Answer", "")}'
         f'<div class="answer">{_html.escape(result.answer)}</div>'
         '</section>'
     )
@@ -495,6 +543,7 @@ def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) ->
         _format_oss_helper_html(repo_url, repo_header=repo_header)
         + warns
         + meta_row
+        + banner
         + answer_section
         + issue_section
         + wiki_section
@@ -543,12 +592,18 @@ def _render_refs_section(
             f'</div>'
             f'</li>'
         )
+    empty = (
+        f'<div class="empty">No matching {_html.escape(title).lower()} found. '
+        f'This may be a permission/availability issue, not an empty repo '
+        f'— check the warnings above for AGENTOPS_GITHUB_TOKEN / '
+        f'GitHub API errors.</div>'
+    ) if not refs else ''
     return (
         f'<section class="section">'
-        f'<h3 class="section-title">{_html.escape(title)} '
-        f'({len(refs)})</h3>'
-        f'<ul class="ref-list">' + "".join(items) + '</ul>'
-        '</section>'
+        f'{_title(_html.escape(title), len(refs))}'
+        + empty
+        + '<ul class="ref-list">' + "".join(items) + '</ul>'
+        + '</section>'
     )
 
 
