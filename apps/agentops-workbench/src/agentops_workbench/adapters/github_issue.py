@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -33,6 +34,11 @@ import httpx
 
 from ..mcp import classify_mcp_error
 from .base import EvidenceRef
+
+
+def _time_monotonic_safe() -> float:
+    """Lightweight monotonic-time helper with a safe fallback."""
+    return time.monotonic()
 
 _API_BASE = "https://api.github.com"
 
@@ -52,8 +58,21 @@ def _raise_for_status(resp: httpx.Response) -> None:
         return
     snippet = resp.text[:200]
     if resp.status_code in (401, 403):
+        body_lc = snippet.lower()
+        if 'rate limit' in body_lc:
+            raise _GitHubStatusError(
+                f"GitHub API rate limit exceeded: {resp.status_code} {snippet}"
+                f" -- authenticated requests get a higher limit; set AGENTOPS_GITHUB_TOKEN."
+            )
+        if 'permission' in body_lc or 'must have access' in body_lc or 'forbidden' in body_lc:
+            raise _GitHubStatusError(
+                f"permission denied by GitHub API: {resp.status_code} {snippet}"
+            )
+        # 403 with no specific keyword: default to rate-limit (the
+        # common case for anonymous requests against private or
+        # large repos).
         raise _GitHubStatusError(
-            f"permission denied by GitHub API: {resp.status_code} {snippet}"
+            f"GitHub API request rejected: {resp.status_code} {snippet}"
         )
     if resp.status_code == 404:
         raise _GitHubStatusError(f"GitHub resource not found: 404 {snippet}")
@@ -119,15 +138,54 @@ class GitHubIssueAdapter:
         window: tuple[str, str] | None = None,
         filters: dict[str, Any] | None = None,
     ) -> list[EvidenceRef]:
-        q = f"repo:{self._owner}/{self._repo}"
-        if query.strip():
-            q += f" {query.strip()}"
+        q = self._build_search_q(query, filters, window)
+        # Backwards-compat: callers (and older tests) used to pass
+        # a bare keyword and rely on us prepending the repo scope.
+        # Keep that behavior when no repo: qualifier is present so
+        # existing tests + future callers don't have to know
+        # oss_helper.py's exact contract.
+        if not q.lstrip().startswith("repo:"):
+            q = f"repo:{self._owner}/{self._repo} {q}".strip()
+        cache_key = (
+            (
+                getattr(self, "_owner", ""),
+                getattr(self, "_repo", ""),
+                bool(getattr(self, "_token", "")),
+            ),
+            q, top_k,
+        )
+        # 60-second per-process cache: repeated probes within one eval
+        # do not each burn a GitHub rate-limit slot.
+        cache = getattr(self, "_cache", None)
+        if cache is None:
+            cache = {}
+            self._cache = cache
+        cached = cache.get(cache_key)
+        if cached is not None:
+            if _time_monotonic_safe() - cached[0] < 60.0:
+                return list(cached[1])
+        try:
+            results = self._search_evidence_uncached(q, top_k)
+        except Exception as exc:
+            raise classify_mcp_error(exc) from exc
+        cache[cache_key] = (_time_monotonic_safe(), results)
+        return list(results)
+
+    @staticmethod
+    def _build_search_q(query, filters, window):
+        # oss_helper.py already builds the full repo + qualifiers +
+        # query string. Here we only append the trailing parts.
+        q_parts = []
+        if query and query.strip():
+            q_parts.append(query.strip())
         for key, value in (filters or {}).items():
-            q += f" {key}:{value}"
+            q_parts.append(f"{key}:{value}")
         if window is not None:
             start, end = window
-            q += f" created:{start[:10]}..{end[:10]}"
+            q_parts.append(f"created:{start[:10]}..{end[:10]}")
+        return " ".join(q_parts)
 
+    def _search_evidence_uncached(self, q: str, top_k: int) -> list[EvidenceRef]:
         try:
             resp = self._client.get(
                 "/search/issues",
@@ -135,12 +193,13 @@ class GitHubIssueAdapter:
                 headers=self._headers(),
             )
         except httpx.HTTPError as exc:
+            # Pass through the original httpx.HTTPError so classify_mcp_error
+            # can check the actual class name (e.g. ConnectTimeout -> "timeout").
             raise classify_mcp_error(exc) from exc
         try:
             _raise_for_status(resp)
         except _GitHubStatusError as exc:
             raise classify_mcp_error(exc) from exc
-
         try:
             data = resp.json()
         except ValueError as exc:
