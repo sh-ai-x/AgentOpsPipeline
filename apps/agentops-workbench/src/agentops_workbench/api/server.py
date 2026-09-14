@@ -11,6 +11,7 @@ Auth: HS256 JWT (dev secret in .env). principal_id from the `sub` claim.
 from __future__ import annotations
 
 import hashlib
+import html as _html
 import json
 import logging
 import os
@@ -22,11 +23,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, status
+from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from .. import dev_metrics
+from .. import dev_metrics, oss_helper
 from ..db.models import Action, Run, ToolCall
 from ..db.session import session_scope
 from ..graph.state import RunState, make_action_key
@@ -291,6 +293,126 @@ def get_run(run_id: str, principal_id: str = Depends(require_principal)) -> RunV
             cost_usd=run.cost_usd,
             tool_calls=tool_calls,
         )
+
+
+
+_OSS_HELPER_HTML = '''<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>agentops-oss-helper</title>
+<style>
+body { font: 14px/1.45 -apple-system, BlinkMacSystemFont, sans-serif;
+       max-width: 920px; margin: 24px auto; padding: 0 16px; color: #1a1a1a }
+h1 { font-size: 18px; margin: 0 0 4px } small { color: #777; font-weight: 400 }
+form { display: flex; gap: 8px; margin: 12px 0 16px }
+input[type=text] { flex: 1; padding: 8px; border: 1px solid #ccc;
+                   border-radius: 4px; font: inherit }
+button { padding: 8px 16px; border: 0; border-radius: 4px;
+         background: #1a1a1a; color: #fff; cursor: pointer; font: inherit }
+.meta { color: #666; font-size: 12px; margin-bottom: 12px }
+pre.answer { white-space: pre-wrap; background: #f6f6f6;
+             padding: 12px; border-radius: 4px; font: 13px/1.45 ui-monospace, monospace }
+details { margin-top: 12px } details summary { cursor: pointer; color: #1a1a1a }
+.warn { color: #a85; background: #fff8e8; padding: 8px; border-radius: 4px; margin: 8px 0 }
+.ref { background: #eef; padding: 1px 4px; border-radius: 3px; font: 12px ui-monospace }
+</style></head><body>
+<h1>agentops-oss-helper <small>Open Source Maintainer Helper Agent</small></h1>
+<p class="meta">Paste a public GitHub repo URL. The tool retrieves that
+  repo's own docs/README (via <code>git sparse-checkout</code>) and
+  Issues/PRs (via the GitHub REST API), then answers your question
+  with citations. No login, no write-back to the target repo.</p>
+<form method="post" action="/oss-helper">
+  <input type="text" name="repo_url" required autofocus
+         placeholder="https://github.com/<owner>/<repo>"
+         value="''' + "{}" + '''">
+  <input type="text" name="question"
+         placeholder="optional free-text question">
+  <input type="text" name="issue_number"
+         placeholder="optional issue #">
+  <button type="submit">Run</button>
+</form>
+''' + '{repo_url_value}' + '''
+</body></html>'''
+
+# No global state needed: repo_url_value is interpolated per-request below
+
+@app.get("/oss-helper", response_class=HTMLResponse)
+def oss_helper_form() -> HTMLResponse:
+    """Minimal HTML form. No Streamlit dependency -- works in any browser.
+    Proves the backend/frontend split: this whole flow is reachable
+    without streamlit installed (per ADR-0008 exit criterion 2)."""
+    return HTMLResponse(_format_oss_helper_html(""))
+
+@app.post("/oss-helper", response_class=HTMLResponse)
+async def oss_helper_run(
+    repo_url: str = Form(...),
+    question: str = Form(""),
+    issue_number: str = Form(""),
+) -> HTMLResponse:
+    """Run the OSS Maintainer Helper flow and render an HTML report."""
+    try:
+        issue_n = int(issue_number) if issue_number.strip() else None
+        result = oss_helper.run_oss_helper(
+            repo_url=repo_url,
+            question=question.strip() or None,
+            issue_number=issue_n,
+        )
+    except ValueError as exc:
+        body = _format_oss_helper_html(repo_url)
+        return HTMLResponse(
+            body + f'<p class="warn">{exc}</p></body></html>'
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("oss-helper run failed")
+        body = _format_oss_helper_html(repo_url)
+        return HTMLResponse(
+            body + f'<p class="warn">Internal error: {exc!r}</p></body></html>'
+        )
+    return HTMLResponse(_render_oss_helper_report(repo_url, result))
+
+def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) -> str:
+    """Render the TriageResult as HTML. Inline-only -- no client-side JS,
+    no external assets, no Streamlit dependency."""
+    warns = "".join(f'<p class="warn">{w}</p>' for w in result.warnings)
+    refs_wiki = _render_refs(result.wiki_refs)
+    refs_issue = _render_refs(result.issue_refs)
+    return (
+        _format_oss_helper_html(repo_url)
+        + f'<p class="meta">{result.owner}/{result.repo}'
+        + (f' &middot; issue #{result.issue_number}' if result.issue_number else "")
+        + f' &middot; {len(result.wiki_refs)} doc refs, {len(result.issue_refs)} issue/PR refs'
+        + f' &middot; {result.duration_ms}ms</p>'
+        + warns
+        + '<h2 style="font-size:15px;margin:16px 0 4px">Answer</h2>'
+        + f'<pre class="answer">{_html.escape(result.answer)}</pre>'
+        + '<details><summary>Docs evidence (' + str(len(result.wiki_refs)) + ')</summary>'
+        + refs_wiki + '</details>'
+        + '<details><summary>Issue/PR evidence (' + str(len(result.issue_refs)) + ')</summary>'
+        + refs_issue + '</details>'
+        + '</body></html>'
+    )
+
+def _render_refs(refs: list[dict]) -> str:
+    out = []
+    for r in refs:
+        rid = _html.escape(str(r.get('ref_id', '')))
+        title = _html.escape(str(r.get('title', '')))
+        sk = _html.escape(str(r.get('source_kind', '')))
+        score = r.get('score', 0)
+        out.append(
+            f'<div style="margin:6px 0">'
+            f'<span class="ref">{rid}</span> {title}'
+            f' <span class="meta">[{sk}, score={score:.2f}]</span></div>'
+        )
+    return "".join(out)
+
+def _format_oss_helper_html(repo_url: str) -> str:
+    """Substitute the per-request URL into the HTML template.
+
+    Uses str.replace (not str.format) because the template's CSS contains
+    brace literals that str.format would mis-parse as placeholders.
+    """
+    return _OSS_HELPER_HTML.replace("{repo_url_value}", _html.escape(repo_url or ""))
+
 
 
 @app.get("/_debug/retrieve", response_model=dict)
