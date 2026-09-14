@@ -300,34 +300,103 @@ _OSS_HELPER_HTML = '''<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>agentops-oss-helper</title>
 <style>
-body { font: 14px/1.45 -apple-system, BlinkMacSystemFont, sans-serif;
-       max-width: 920px; margin: 24px auto; padding: 0 16px; color: #1a1a1a }
-h1 { font-size: 18px; margin: 0 0 4px } small { color: #777; font-weight: 400 }
-form { display: flex; gap: 8px; margin: 12px 0 16px }
-input[type=text] { flex: 1; padding: 8px; border: 1px solid #ccc;
-                   border-radius: 4px; font: inherit }
-button { padding: 8px 16px; border: 0; border-radius: 4px;
-         background: #1a1a1a; color: #fff; cursor: pointer; font: inherit }
-.meta { color: #666; font-size: 12px; margin-bottom: 12px }
-pre.answer { white-space: pre-wrap; background: #f6f6f6;
-             padding: 12px; border-radius: 4px; font: 13px/1.45 ui-monospace, monospace }
-details { margin-top: 12px } details summary { cursor: pointer; color: #1a1a1a }
-.warn { color: #a85; background: #fff8e8; padding: 8px; border-radius: 4px; margin: 8px 0 }
-.ref { background: #eef; padding: 1px 4px; border-radius: 3px; font: 12px ui-monospace }
+:root {
+  --bg: #fafafa;
+  --fg: #1a1a1a;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --accent: #2563eb;
+  --accent-bg: #eff6ff;
+  --warn-bg: #fef3c7;
+  --warn-fg: #92400e;
+  --issue-bg: #fef2f2;
+  --issue-fg: #b91c1c;
+  --wiki-bg: #f0fdf4;
+  --wiki-fg: #166534;
+  --code-bg: #f3f4f6;
+}
+* { box-sizing: border-box }
+body { font: 15px/1.55 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+       max-width: 960px; margin: 0 auto; padding: 32px 24px; color: var(--fg);
+       background: var(--bg) }
+header { margin-bottom: 24px }
+h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em }
+.tagline { color: var(--muted); font-size: 13px; margin: 0 }
+.repo-badge { display: inline-flex; align-items: center; gap: 6px;
+              background: var(--accent-bg); color: var(--accent);
+              font-weight: 600; padding: 4px 10px; border-radius: 6px;
+              font-family: ui-monospace, monospace; font-size: 13px;
+              margin: 16px 0 0 }
+.repo-badge .octicon { font-size: 12px }
+.status-pill { display: inline-flex; align-items: center; gap: 6px;
+                padding: 3px 9px; border-radius: 999px; font-size: 11px;
+                font-weight: 500; margin-left: 8px; background: #f0fdf4; color: #166534 }
+form { background: white; border: 1px solid var(--border); border-radius: 10px;
+       padding: 16px; margin: 16px 0; display: grid;
+       grid-template-columns: 1fr 2fr 1fr auto; gap: 8px }
+input[type=text] { padding: 9px 12px; border: 1px solid var(--border);
+                   border-radius: 6px; font: inherit; background: white }
+input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px;
+                         border-color: transparent }
+input[type=text]::placeholder { color: #9ca3af }
+button { padding: 9px 18px; border: 0; border-radius: 6px; background: var(--fg);
+         color: white; cursor: pointer; font: inherit; font-weight: 500 }
+button:hover { background: #000 }
+button:disabled { background: var(--muted); cursor: progress }
+.meta-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+            margin: 16px 0; font-size: 13px; color: var(--muted) }
+.meta-chip { background: white; border: 1px solid var(--border); border-radius: 999px;
+            padding: 3px 10px; font-size: 12px }
+.meta-chip strong { color: var(--fg); font-weight: 600 }
+.warn { background: var(--warn-bg); color: var(--warn-fg);
+         padding: 10px 14px; border-radius: 6px; margin: 12px 0;
+         font-size: 13px; border-left: 3px solid #f59e0b }
+.section { background: white; border: 1px solid var(--border); border-radius: 10px;
+          padding: 20px; margin: 16px 0 }
+.section-title { font-size: 11px; font-weight: 600; text-transform: uppercase;
+                letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px }
+.ref-list { list-style: none; padding: 0; margin: 0 }
+.ref-list li { padding: 10px 0; border-bottom: 1px solid var(--border);
+              display: flex; gap: 10px; align-items: flex-start }
+.ref-list li:last-child { border-bottom: 0 }
+.ref-badge { flex-shrink: 0; font-family: ui-monospace, monospace; font-size: 12px;
+             padding: 3px 8px; border-radius: 4px; font-weight: 600;
+             text-decoration: none; min-width: 80px; text-align: center }
+.ref-badge.github-issue { background: var(--issue-bg); color: var(--issue-fg) }
+.ref-badge.wiki { background: var(--wiki-bg); color: var(--wiki-fg) }
+.ref-content { flex: 1; min-width: 0 }
+.ref-title { font-size: 14px; line-height: 1.35; margin: 0 0 4px; word-wrap: break-word }
+.ref-title a { color: var(--fg); text-decoration: none }
+.ref-title a:hover { text-decoration: underline }
+.ref-score { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace }
+.answer { white-space: pre-wrap; background: var(--code-bg); padding: 16px;
+          border-radius: 8px; font: 14px/1.55 ui-monospace, monospace;
+          border: 1px solid var(--border); margin: 0 }
+.empty { color: var(--muted); font-style: italic; padding: 12px 0 }
+.loading { display: inline-block; padding: 9px 18px; background: var(--muted);
+           color: white; border-radius: 6px; opacity: 0.7;
+           font: 14px/1 inherit; font-weight: 500 }
+@media (max-width: 640px) {
+  form { grid-template-columns: 1fr; }
+  .ref-list li { flex-direction: column; gap: 6px }
+  .ref-badge { align-self: flex-start }
+}
 </style></head><body>
-<h1>agentops-oss-helper <small>Open Source Maintainer Helper Agent</small></h1>
-<p class="meta">Paste a public GitHub repo URL. The tool retrieves that
-  repo's own docs/README (via <code>git sparse-checkout</code>) and
-  Issues/PRs (via the GitHub REST API), then answers your question
-  with citations. No login, no write-back to the target repo.</p>
+<header>
+<h1>agentops-oss-helper</h1>
+<p class="tagline">Open Source Maintainer Helper Agent &mdash; paste a public
+GitHub repo, get a grounded triage with citations from that repo's own
+docs and issues/PRs.</p>
+</header>
+{repo_header}
 <form method="post" action="/oss-helper">
   <input type="text" name="repo_url" required autofocus
          placeholder="https://github.com/<owner>/<repo>"
-         value="''' + "{}" + '''">
+         value="{repo_url_value}">
   <input type="text" name="question"
-         placeholder="optional free-text question">
+         placeholder="optional question">
   <input type="text" name="issue_number"
-         placeholder="optional issue #">
+         placeholder="issue #">
   <button type="submit">Run</button>
 </form>
 ''' + '{repo_url_value}' + '''
@@ -341,6 +410,7 @@ def oss_helper_form() -> HTMLResponse:
     Proves the backend/frontend split: this whole flow is reachable
     without streamlit installed (per ADR-0008 exit criterion 2)."""
     return HTMLResponse(_format_oss_helper_html(""))
+
 
 @app.post("/oss-helper", response_class=HTMLResponse)
 async def oss_helper_run(
@@ -357,61 +427,155 @@ async def oss_helper_run(
             issue_number=issue_n,
         )
     except ValueError as exc:
-        body = _format_oss_helper_html(repo_url)
-        return HTMLResponse(
-            body + f'<p class="warn">{exc}</p></body></html>'
+        body = _format_oss_helper_html(repo_url) + (
+            f'<p class="warn">{_html.escape(str(exc))}</p></body></html>'
         )
+        return HTMLResponse(body)
     except Exception as exc:  # noqa: BLE001
         log.exception("oss-helper run failed")
-        body = _format_oss_helper_html(repo_url)
-        return HTMLResponse(
-            body + f'<p class="warn">Internal error: {exc!r}</p></body></html>'
+        body = _format_oss_helper_html(repo_url) + (
+            f'<p class="warn">Internal error: {_html.escape(repr(exc))}</p></body></html>'
         )
+        return HTMLResponse(body)
     return HTMLResponse(_render_oss_helper_report(repo_url, result))
+
 
 def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) -> str:
     """Render the TriageResult as HTML. Inline-only -- no client-side JS,
     no external assets, no Streamlit dependency."""
-    warns = "".join(f'<p class="warn">{w}</p>' for w in result.warnings)
-    refs_wiki = _render_refs(result.wiki_refs)
-    refs_issue = _render_refs(result.issue_refs)
+    # Top-of-result hero: the repo the user is looking at, with a status
+    # pill showing how many citations the agent found.
+    github_url = f"https://github.com/{result.owner}/{result.repo}"
+    repo_header = (
+        f'<div class="repo-badge">'
+        f'<span class="octicon">&#9737;</span>'
+        f'<a href="{_html.escape(github_url)}" style="color:inherit;text-decoration:none">'
+        f'{_html.escape(result.owner)}/{_html.escape(result.repo)}</a>'
+        f'<span class="status-pill">'
+        f'{len(result.wiki_refs)} docs &middot; {len(result.issue_refs)} issues '
+        f'&middot; {result.duration_ms}ms</span>'
+        f'</div>'
+    )
+
+    warns = "".join(
+        f'<p class="warn">{_html.escape(w)}</p>' for w in result.warnings
+    )
+
+    issue_n = result.issue_number
+    issue_label = f" &middot; focused on issue #{issue_n}" if issue_n else ""
+
+    meta_row = (
+        f'<div class="meta-row">'
+        f'<span class="meta-chip">docs: <strong>{len(result.wiki_refs)}</strong></span>'
+        f'<span class="meta-chip">issues/PRs: <strong>{len(result.issue_refs)}</strong></span>'
+        f'<span class="meta-chip">duration: <strong>{result.duration_ms}ms</strong></span>'
+        f'<span class="meta-chip">provider: <strong>{_html.escape(_provider_name())}</strong></span>'
+        f'{_html.escape(issue_label)}'
+        f'</div>'
+    )
+
+    answer_section = (
+        '<section class="section">'
+        '<h3 class="section-title">Answer</h3>'
+        f'<div class="answer">{_html.escape(result.answer)}</div>'
+        '</section>'
+    )
+
+    issue_section = _render_refs_section(
+        "Issue / PR evidence",
+        result.issue_refs,
+        owner=result.owner, repo=result.repo,
+    )
+    wiki_section = _render_refs_section(
+        "Docs evidence (from repo's own docs/README)",
+        result.wiki_refs,
+        owner=result.owner, repo=result.repo,
+    )
+
     return (
-        _format_oss_helper_html(repo_url)
-        + f'<p class="meta">{result.owner}/{result.repo}'
-        + (f' &middot; issue #{result.issue_number}' if result.issue_number else "")
-        + f' &middot; {len(result.wiki_refs)} doc refs, {len(result.issue_refs)} issue/PR refs'
-        + f' &middot; {result.duration_ms}ms</p>'
+        _format_oss_helper_html(repo_url, repo_header=repo_header)
         + warns
-        + '<h2 style="font-size:15px;margin:16px 0 4px">Answer</h2>'
-        + f'<pre class="answer">{_html.escape(result.answer)}</pre>'
-        + '<details><summary>Docs evidence (' + str(len(result.wiki_refs)) + ')</summary>'
-        + refs_wiki + '</details>'
-        + '<details><summary>Issue/PR evidence (' + str(len(result.issue_refs)) + ')</summary>'
-        + refs_issue + '</details>'
+        + meta_row
+        + answer_section
+        + issue_section
+        + wiki_section
         + '</body></html>'
     )
 
-def _render_refs(refs: list[dict]) -> str:
-    out = []
-    for r in refs:
-        rid = _html.escape(str(r.get('ref_id', '')))
-        title = _html.escape(str(r.get('title', '')))
-        sk = _html.escape(str(r.get('source_kind', '')))
-        score = r.get('score', 0)
-        out.append(
-            f'<div style="margin:6px 0">'
-            f'<span class="ref">{rid}</span> {title}'
-            f' <span class="meta">[{sk}, score={score:.2f}]</span></div>'
-        )
-    return "".join(out)
 
-def _format_oss_helper_html(repo_url: str) -> str:
+def _render_refs_section(
+    title: str, refs: list[dict], *, owner: str, repo: str
+) -> str:
+    """Render one evidence section: header + list of clickable refs.
+
+    Issue/PR refs link to the actual GitHub page; wiki refs link to the
+    blob at HEAD on the repo (the wiki adapter doesn't track an exact
+    file path because paths get flattened during acquisition, so we point
+    at the repo root and the user can browse from there)."""
+    if not refs:
+        return (
+            f'<section class="section">'
+            f'<h3 class="section-title">{_html.escape(title)}</h3>'
+            f'<p class="empty">No matching evidence found.</p>'
+            f'</section>'
+        )
+    items = []
+    for r in refs:
+        rid = str(r.get("ref_id", ""))
+        title_text = str(r.get("title", ""))
+        source_kind = str(r.get("source_kind", ""))
+        score = r.get("score", 0)
+        if source_kind == "github-issue" and rid.isdigit():
+            url = f"https://github.com/{owner}/{repo}/issues/{rid}"
+            badge_cls = "github-issue"
+            badge_text = f"#{rid}"
+        else:
+            url = f"https://github.com/{owner}/{repo}"
+            badge_cls = "wiki"
+            badge_text = rid or "wiki"
+        items.append(
+            f'<li>'
+            f'<a class="ref-badge {badge_cls}" href="{_html.escape(url)}" '
+            f'target="_blank" rel="noopener">{_html.escape(badge_text)}</a>'
+            f'<div class="ref-content">'
+            f'<div class="ref-title"><a href="{_html.escape(url)}" '
+            f'target="_blank" rel="noopener">{_html.escape(title_text)}</a></div>'
+            f'<div class="ref-score">score: {score:.2f}</div>'
+            f'</div>'
+            f'</li>'
+        )
+    return (
+        f'<section class="section">'
+        f'<h3 class="section-title">{_html.escape(title)} '
+        f'({len(refs)})</h3>'
+        f'<ul class="ref-list">' + "".join(items) + '</ul>'
+        '</section>'
+    )
+
+
+def _provider_name() -> str:
+    """Best-effort read of the current provider setting for the status row.
+    Falls back to '?' if Settings isn't reachable (e.g. during a probe)."""
+    try:
+        from ..settings import get_settings
+        return get_settings().provider
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
+def _format_oss_helper_html(
+    repo_url: str, *, repo_header: str = ""
+) -> str:
     """Substitute the per-request URL into the HTML template.
 
     Uses str.replace (not str.format) because the template's CSS contains
     brace literals that str.format would mis-parse as placeholders.
     """
-    return _OSS_HELPER_HTML.replace("{repo_url_value}", _html.escape(repo_url or ""))
+    return _OSS_HELPER_HTML.replace(
+        "{repo_url_value}", _html.escape(repo_url or "")
+    ).replace(
+        "{repo_header}", repo_header or ""
+    )
 
 
 

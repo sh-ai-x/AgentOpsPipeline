@@ -364,12 +364,21 @@ def test_web_post_runs_flow_and_renders_answer(client, monkeypatch) -> None:
     )
     assert r.status_code == 200
     body = r.text
+    # Hero: the repo the user is looking at, with a clickable link.
     assert "octocat/hello-world" in body
-    assert "42" in body  # issue number
-    assert "1 doc refs, 1 issue/PR refs" in body
+    assert "https://github.com/octocat/hello-world" in body
+    # Issue number + that the issue link points to the GitHub URL.
+    assert "42" in body
+    assert "https://github.com/octocat/hello-world/issues/42" in body
+    # Counts surfaced as separate chips.
+    assert ">docs: <strong>1</strong>" in body
+    assert ">issues/PRs: <strong>1</strong>" in body
+    # Duration surfaced as a chip.
     assert "123ms" in body
-    assert "pip install hello-world" in body  # answer text
-    assert "installation guide" in body  # wiki ref title
+    # Answer text preserved (escaped).
+    assert "pip install hello-world" in body
+    # Wiki ref title preserved.
+    assert "installation guide" in body
 
 
 def test_web_post_renders_form_error_on_bad_url(client, monkeypatch) -> None:
