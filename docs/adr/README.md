@@ -19,6 +19,8 @@
 | 0004 | Dataset separation (dev / val / held-out) | Accepted | [`../../apps/agentops-workbench/docs/adr/0004-dataset-separation.md`](../../apps/agentops-workbench/docs/adr/0004-dataset-separation.md) |
 | 0005 | Runtime safety / cost cap | Tombstone | [`0005-runtime-safety.md`](0005-runtime-safety.md) (absorbed into ADR-0003) |
 | 0006 | Topology shipping choice (fixed graph) | Accepted | [`../../apps/agentops-workbench/docs/adr/0006-topology.md`](../../apps/agentops-workbench/docs/adr/0006-topology.md) |
+| 0007 | Evidence-source adapter pattern (generalizes `DocumentClient`) | Accepted | [`../../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md`](../../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md) |
+| 0008 | GitHub-URL CLI flow scope + deployment target (Fly.io) | Accepted | [`../../apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md`](../../apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md) |
 
 ## The ADR-0005 gap
 

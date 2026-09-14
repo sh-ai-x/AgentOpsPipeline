@@ -1,9 +1,28 @@
 # AgentOps Workbench
 
+> **Pivot (2026-09-13).** The description below is the historical scope —
+> left as written, not deleted. The portfolio narrative has moved to
+> open-source-maintainer / developer-tooling automation (the domain the
+> author can judge and defend; generic customer support is retired from
+> the narrative permanently), built on a general `EvidenceSourceAdapter`
+> pattern with five real, tested implementations
+> ([PR #34](https://github.com/sh-ai-x/AgentOpsPipeline/pull/34)), scoped
+> to one flagship flow — `agentops-oss-helper <github-repo-url>` — plus a
+> real deployment target (Fly.io). Full design:
+> [`docs/proposals/agentops-workbench-proposal.md`](docs/proposals/agentops-workbench-proposal.md)
+> §"Pivot (2026-09-13)" and §"Update 2 (2026-09-13)"; the decisions
+> themselves are recorded in
+> [ADR-0007](apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md)
+> and
+> [ADR-0008](apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md).
+> Nothing below this note is deployed yet — see
+> [`phases/08-deployable-mvp/index.md`](phases/08-deployable-mvp/index.md)
+> for exit criteria.
+
 A support-operations agent that turns a repository issue into a *grounded*
 answer and an *approval-gated* ticket draft, plus an experiment workbench that
 compares prompt, workflow-topology and tool-integration choices on a frozen
-30-case benchmark.
+30-case benchmark. (Historical — see the pivot note above.)
 
 The contribution is one complete application and one measurement study — not a
 general-purpose agent framework. LangGraph from the first release, LangChain

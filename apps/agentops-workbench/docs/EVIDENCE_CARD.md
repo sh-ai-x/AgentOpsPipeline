@@ -9,7 +9,14 @@
 A LangGraph / FastAPI support-ops agent integrating:
 - Custom document MCP server (stdio, spec `2026-07-28`)
 - Pinned `@modelcontextprotocol/server-filesystem` (fixture- scope)
-- 5 MVP tools (search_docs, read_document, get_issue, create_ticket_draft, publish_ticket)
+- 2 real tools wired to a run (`search_docs`, `read_document`, invoked by the
+  `planner_executor` topology as of PR #21). `get_issue` has no backing data
+  source anywhere in this codebase — a planned call to it normalizes to
+  `MCPError(kind="unsupported_capability")` rather than faking a result.
+  `create_ticket_draft` / `publish_ticket` are not tools at all: only
+  `TicketLedger.publish()` exists, and `/v1/actions` mints a nonce without
+  ever calling it. (Corrected 2026-09-13 — see `build-report.md`; previously
+  claimed as "5 MVP tools", 2 real.)
 - 3 execution topologies (fixed / single_agent / planner_executor) behind a single registry
 - FastAPI surface with HS256 JWT (`POST /v1/runs`, `GET /v1/runs/{id}`, `POST /v1/runs/{id}/cancel`, `POST /v1/actions`)
 - SQLAlchemy + Alembic migrations + SQLite (Postgres-ready)
@@ -38,7 +45,9 @@ A LangGraph / FastAPI support-ops agent integrating:
 - v3_minimal published as unsuccessful change per proposal
 
 ### Local deterministic gates
-- **144 tests passing**, ruff clean
+- **177 tests passing** (re-run 2026-09-13, `main` post-PR#20/#21; previously
+  claimed 144), 5 pre-existing ruff findings remain in `scripts/*.py`
+  (unrelated screenshot helper, out of scope for #20/#21)
 - Held-out + 3-prompt experiments reproducible end-to-end via `python
 
 m -m agentops_workbench.experiments.<held_out|prompts>`
@@ -74,7 +83,10 @@ AGENTOPS_PROVIDER=minimax uv run python -m agentops_workbench.experiments.prompt
 > (document + filesystem); compared 2 workflow configurations and 3
 > prompt versions on a 30-case benchmark; ran 42 live experiments
 > (24 held-out + 18 prompt-comparison) on `MiniMax-M3` for $0.03 total
-> cost and 144 passing tests.
+> cost and 177 passing tests. The held-out/prompt numbers above predate
+> PR #20 (LangGraph `StateGraph` rewrite) and #21 (real `search_docs`/
+> `read_document` tool execution in `planner_executor`) — they have not
+> been re-run since; see `build-report.md` for current status.
 
 ## References
 
