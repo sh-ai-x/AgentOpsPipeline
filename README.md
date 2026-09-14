@@ -1,16 +1,26 @@
 # AgentOps Workbench
 
+> **Pivot (2026-09-13):** the description below is the historical scope and
+> is left as written, not deleted. The portfolio narrative has moved to
+> open-source-maintainer / developer-tooling automation (the domain the
+> author can actually judge and defend; generic customer support is retired
+> from the narrative permanently) — see
+> [`docs/proposals/agentops-workbench-proposal.md`](docs/proposals/agentops-workbench-proposal.md)
+> §"Pivot (2026-09-13)" / §"Update 2 (2026-09-13)",
+> [ADR-0007](apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md),
+> and [ADR-0008](apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md).
+
 A support-operations agent that turns a repository issue into a *grounded*
 answer and an *approval-gated* ticket draft, plus an experiment workbench that
 compares prompt, workflow-topology and tool-integration choices on a frozen
-30-case benchmark.
+30-case benchmark. (Historical — see the pivot note above.)
 
 The contribution is one complete application and one measurement study — not a
 general-purpose agent framework. LangGraph from the first release, LangChain
 integrations, an MCP document server and a pinned filesystem server.
 
 - **Scope of record:** [`docs/proposals/agentops-workbench-proposal.md`](docs/proposals/agentops-workbench-proposal.md)
-- **Application:** [`apps/agentops-workbench/`](apps/agentops-workbench/) — `src/`, `fixtures/`, `experiments/`, `docker/`, 154 tests (imported in PR #8)
+- **Application:** [`apps/agentops-workbench/`](apps/agentops-workbench/) — `src/`, `fixtures/`, `experiments/`, `docker/`, test count tracked in [`apps/agentops-workbench/docs/EVIDENCE_CARD.md`](apps/agentops-workbench/docs/EVIDENCE_CARD.md)
 - **Phase index + build audit:** [`phases/index.md`](phases/index.md), [`phases/build-report.md`](phases/build-report.md)
 - **ADR catalogue:** [`docs/adr/README.md`](docs/adr/README.md)
 

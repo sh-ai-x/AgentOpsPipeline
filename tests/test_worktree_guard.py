@@ -164,8 +164,16 @@ class TestWorktreeGuardAllows(unittest.TestCase):
         finally:
             wt_parent.cleanup()
 
-    def test_allows_target_worktree_when_hook_cwd_is_main_checkout(self):
-        """Target path wins when a sub-agent inherits the parent's main cwd."""
+    def test_blocks_target_worktree_when_hook_cwd_is_main_checkout(self):
+        """DEPRECATED: this test's original intent was to encode the
+        sub-agent-in-worktree-with-parent-main-cwd case (issue #842 fix),
+        which is now covered by test_worktree_guard_bypass.py's
+        test_allows_subagent_in_worktree. The original test allowed
+        main-checkout edits pointing at a worktree -- but that was the
+        bypass. Now: a main-checkout session editing into a worktree
+        must be denied (the same main checkout rule applies). The
+        bypass-rejection regression covers this case in the new file.
+        """
         main_tmp, wt_parent, wt_path = _init_main_with_worktree()
         try:
             r = _run_hook(
@@ -173,7 +181,9 @@ class TestWorktreeGuardAllows(unittest.TestCase):
                 _edit_payload(str(wt_path / "new.py")),
                 cwd=Path(main_tmp.name),
             )
-            self.assertEqual(r.returncode, 0, f"expected allow, got rc={r.returncode}, stderr={r.stderr}")
+            self.assertEqual(r.returncode, 2,
+                f"expected deny (bypass closed), got rc={r.returncode}, stderr={r.stderr}")
+            self.assertIn("main checkout", r.stdout + r.stderr)
         finally:
             wt_parent.cleanup()
             main_tmp.cleanup()

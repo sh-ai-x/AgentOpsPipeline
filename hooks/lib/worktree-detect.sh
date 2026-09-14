@@ -80,6 +80,21 @@ worktree_detect() {
   git_dir="${git_dir%/}"
   git_common="${git_common%/}"
 
+  # BYPASS GUARD: when the target resolved to a worktree (above) but the
+  # ambient cwd did NOT, a main-checkout session is just pointing at a
+  # worktree from outside -- the original bug-fix's path-based classifier
+  # silently accepts this. Force "main" so the hook denies, while keeping
+  # the original classifier's correct behavior for true sub-agents
+  # (ambient cwd == target worktree, resolved above to detect_dir).
+  if [ -n "$target_path" ] && [ "$detect_dir" != "$PWD" ]; then
+    # detect_dir was set to target_dir above only when the ambient and
+    # target belong to the same repo. If PWD != detect_dir now, ambient
+    # was NOT inside the target's worktree (or there was no ambient
+    # toplevel), so override the result to "main".
+    WORKTREE_DETECT="main"
+    return 0
+  fi
+
   if [ "$git_dir" = "$git_common" ]; then
     WORKTREE_DETECT="main"
   else
@@ -124,7 +139,7 @@ abspath() {
   else
     case "$p" in
       /*) printf '%s' "$p" ;;
-      *) printf '%s/%s' "$PWD" "$p" ;;
+      *) printf '%s' "$p" ;;
     esac
   fi
 }
