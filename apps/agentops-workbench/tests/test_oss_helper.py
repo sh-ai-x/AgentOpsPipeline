@@ -222,6 +222,77 @@ def test_run_oss_helper_handles_bad_url() -> None:
         run_oss_helper("not a real url", adapter=adapter)
 
 
+def test_run_oss_helper_truncates_long_question_for_gh_256_limit(
+    tmp_path, monkeypatch
+) -> None:
+    """GitHub's /search/issues enforces a 256-char limit on `q`. Concatenating
+    a long question + issue body blew past it with a 422, which surfaced
+    as a silent 0-results page. The fix truncates the github-side query
+    defensively; the wiki-side query is unaffected."""
+    repo = tmp_path / "owner" / "big-repo"
+    repo.mkdir(parents=True)
+    (repo / "README.md").write_text("# big-repo\n")
+
+    from agentops_workbench.adapters import wiki_rag
+    orig_init = wiki_rag.WikiRagAdapter.__init__
+
+    def patched_init(self, wiki_dir: str) -> None:
+        orig_init(self, wiki_dir=str(repo))
+
+    monkeypatch.setattr(wiki_rag.WikiRagAdapter, "__init__", patched_init)
+
+    # Track the q parameter GitHubIssueAdapter receives
+    from agentops_workbench.adapters import github_issue
+    received_qs: list[str] = []
+
+    class _TrackingIssue(github_issue.GitHubIssueAdapter):
+        def search_evidence(self, query, top_k=5, window=None, filters=None):
+            received_qs.append(query)
+            from datetime import datetime, timezone
+
+            from agentops_workbench.adapters.base import EvidenceRef
+            return [
+                EvidenceRef(
+                    ref_id="1", title="relevant issue", score=1.0,
+                    source_kind="github-issue",
+                    retrieved_at=datetime.now(timezone.utc).isoformat(),
+                ),
+            ]
+
+        def read_evidence(self, ref_id, offset=0, limit=2000):
+            return "issue body content"
+
+    monkeypatch.setattr(github_issue, "GitHubIssueAdapter", _TrackingIssue)
+    import agentops_workbench.oss_helper as _oh
+    monkeypatch.setattr(_oh, "GitHubIssueAdapter", _TrackingIssue)
+
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.parse_repo_url",
+        lambda url: ("owner", "big-repo", None),
+    )
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.bulk_acquire_repo_docs",
+        lambda owner, repo, **kw: (repo, []),
+    )
+
+    # 500-char question -- would blow the 256-char gh limit if uncut
+    long_q = "word " * 200
+    adapter = _ScriptedAdapter()
+    result = run_oss_helper(
+        "https://github.com/owner/big-repo",
+        question=long_q,
+        adapter=adapter,
+    )
+    assert result.warnings == []
+    assert len(received_qs) == 1
+    assert len(received_qs[0]) <= 256, (
+        f"GitHub search query exceeded 256-char limit: {len(received_qs[0])} chars"
+    )
+    # The wiki side still got the full question -- it's the gh side that
+    # truncates, not the wiki corpus.
+    assert "Docs evidence" in adapter.calls[0][0]["content"]
+
+
 # ---- web route ----
 
 

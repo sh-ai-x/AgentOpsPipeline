@@ -279,19 +279,44 @@ def run_oss_helper(
     wiki = WikiRagAdapter(wiki_dir=str(work))
     issue_adapter = GitHubIssueAdapter(owner=owner, repo=repo, token=github_token)
 
-    # Search both sources for the issue title (or question). Per-source
-    # top-k; never merge-ranked across adapters (different scoring
-    # distributions).
-    query = question or ""
+    # Search both sources. Per-source top-k; never merge-ranked across
+    # adapters (different scoring distributions).
+    #
+    # Query construction -- multiple real bugs were hiding in here:
+    #   - GitHub's issues search API enforces a 256-character limit on the
+    #     `q` parameter. Concatenating question + full issue body blows
+    #     past it with a 422, which then surfaced as a silent 0-results
+    #     page (the exception propagated, but the LLM answered "I found
+    #     no match" anyway because the body still ran through it).
+    #   - Empty `q` is also rejected by GitHub (422 or just no hits),
+    #     which is why a blank form returns 0 issue/PR refs with no
+    #     visible error.
+    # Fix: query stays SHORT (issue # + optional short question, truncated
+    # to 200 chars). When no question is given, search the repo's open
+    # issues broadly via the qualifier `repo:owner/name is:issue is:open`
+    # so we always have something to anchor the LLM's answer.
+    base = f"repo:{owner}/{repo} is:issue is:open"
     if issue is not None:
-        try:
-            issue_body = issue_adapter.read_evidence(ref_id=str(issue))
-            query = (query + "\n\nIssue #" + str(issue) + ":\n" + issue_body).strip()
-        except Exception as exc:  # noqa: BLE001 -- surfaced as warning
-            warnings.append(f"could not fetch issue #{issue}: {exc!r}")
+        base = f"repo:{owner}/{repo} is:issue {issue}"
+    question_fragment = (question or "").strip().splitlines()[0] if question else ""
+    question_fragment = question_fragment[:120].strip()
+    gh_query = (base + (" " + question_fragment if question_fragment else "")).strip()
+    # GitHub enforces 256 chars on /search/issues; truncate defensively.
+    if len(gh_query) > 256:
+        gh_query = gh_query[:256]
 
-    wiki_evs = wiki.search_evidence(query, top_k=5) if query else []
-    issue_evs = issue_adapter.search_evidence(query, top_k=5) if query else []
+    wiki_query = question or ""
+    if issue is not None and not wiki_query:
+        # The wiki side also benefits from a hint when there's no free-text
+        # question -- just the issue number, no body.
+        wiki_query = f"issue {issue}"
+
+    wiki_evs = wiki.search_evidence(wiki_query, top_k=5) if wiki_query else []
+    try:
+        issue_evs = issue_adapter.search_evidence(gh_query, top_k=5)
+    except Exception as exc:  # noqa: BLE001 -- surfaced as warning
+        warnings.append(f"github issues search failed: {exc!r}")
+        issue_evs = []
 
     # Cap the flattened docs folder -- WikiRagAdapter's TF-IDF is a linear
     # scan over every document per query, inappropriate at scale. A
