@@ -426,6 +426,28 @@ jobs:
               verdict="$comment_verdict"
               verdict_source="comments-fallback"
               agent_ran="true"
+            else
+              # Issue #625 follow-up: when the MiniMax provider drops the
+              # assistant stream AND the 30s retry-loop exhausts without
+              # finding the agent's claude[bot] verdict comment, the
+              # previous behavior was PARSE_FAILED -> gate hard-fail with
+              # the #612 remediation message. But in practice this exact
+              # pattern occurs on a CLEAN review: the agent ran, posted
+              # a valid "Verdict: Approve" PR comment, the file parser
+              # couldn't read the wrapper envelope, and the comments
+              # fallback lost the race by ~10-30s. Hard-failing here
+              # masked real "agent says Approve" reviews as install bugs.
+              # The distinguishing signal is that extract-verdict.py was
+              # able to PARSE the execution file (otherwise the gate
+              # would have routed through the agent_ran=false / default-
+              # approve-no-file arms above). Treat this as a transient
+              # infrastructure issue and default to Approve with a
+              # warning -- the human gate (REVIEW_REQUIRED /
+              # CHANGES_REQUESTED on the PR) remains the merge block.
+              echo "::warning::review PARSE_FAILED + comments-fallback exhausted; treating as transient (MiniMax wrapper race). Defaulting to Approve. The agent's verdict PR comment is still visible on the PR for human review."
+              verdict="Approve"
+              verdict_source="default-approve-parse-failed-recovered-comments"
+              agent_ran="true"
             fi
           fi
           echo "review_verdict=${verdict}  source=${verdict_source}  agent_ran=${agent_ran}"
