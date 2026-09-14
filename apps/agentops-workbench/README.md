@@ -6,17 +6,28 @@
 > **Pivot (2026-09-13):** the portfolio narrative is retargeted from
 > generic customer-support ticketing to **developer-tooling / open-source
 > maintainer automation** — the domain the author can actually judge and
-> defend. The evidence-retrieval layer is generalizing from one hardcoded
+> defend. The evidence-retrieval layer generalizes from one hardcoded
 > document corpus into a general **Adapter pattern**
-> (`EvidenceSourceAdapter`) so the same agent can point at a Wiki, security
-> logs, GitHub Issues, or AI-incident data depending on deployment, plus a
-> ticket-ledger facade proving the pattern also covers the original
-> ticketing use case with zero new domain logic. Full design:
+> (`EvidenceSourceAdapter`, [ADR-0007](docs/adr/0007-evidence-source-adapter-pattern.md))
+> so the same agent can point at a Wiki, security logs, GitHub Issues, or
+> AI-incident data depending on deployment, plus a ticket-ledger facade
+> proving the pattern also covers the original ticketing use case with
+> zero new domain logic. **All five adapters are real and tested** ([PR
+> #34](https://github.com/sh-ai-x/AgentOpsPipeline/pull/34), merged, 223
+> passing) but **not yet wired into `graph/**`** — everything below this
+> note still describes the original ticketing flow end-to-end, which is
+> what actually runs today.
+>
+> The product scope has since narrowed to one flagship flow —
+> `agentops-oss-helper <github-repo-url>`, wiring two of the five adapters
+> (Wiki + GitHub Issues) into a new `oss_triage` topology — plus a real
+> deployment target (Fly.io, SQLite on a volume) and a backend/frontend
+> split verifiable without Streamlit
+> ([ADR-0008](docs/adr/0008-github-url-cli-and-deployment-target.md)).
+> **That flow and the deployment are still planning-only, no code.** Full
+> design:
 > [`../../docs/proposals/agentops-workbench-proposal.md`](../../docs/proposals/agentops-workbench-proposal.md)
-> and [`docs/adr/0007-evidence-source-adapter-pattern.md`](docs/adr/0007-evidence-source-adapter-pattern.md).
-> **Status: design + adapter implementation are in open PRs, not yet
-> merged** — everything below this note describes what is currently on
-> `main`, which still reflects the original ticketing flow end-to-end.
+> §"Pivot (2026-09-13)" and §"Update 2 (2026-09-13)".
 
 A support-operations agent that turns a software issue into a grounded
 answer and an approval-gated ticket draft, plus an experiment workbench
