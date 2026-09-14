@@ -81,10 +81,17 @@ class MCPError(Exception):
 
 def classify_mcp_error(exc: Exception) -> MCPError:
     """Wrap a raw exception into MCPError. Covers timeout / disconnect /
-    malformed / unsupported_capability / permission_denied.
+    malformed / unsupported_capability / permission_denied / rate_limit /
+    unknown (fallback).
     """
     msg = str(exc)
     name = exc.__class__.__name__.lower()
+    # rate_limit MUST come before permission_denied because the typical
+    # message from GitHub ("API rate limit exceeded" / "rate limit ... exceeded"
+    # for this IP) often contains the word "denied" -- we want the more
+    # specific bucket.
+    if "rate limit" in msg.lower() or "rate_limit" in name:
+        return MCPError("rate_limit", msg)
     if "timeout" in name or "timeout" in msg.lower():
         return MCPError("timeout", msg)
     if "disconnect" in name or "disconnect" in msg.lower() or "broken pipe" in msg.lower() or "brokenpipe" in name:

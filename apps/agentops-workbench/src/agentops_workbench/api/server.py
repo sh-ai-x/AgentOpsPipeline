@@ -495,7 +495,9 @@ def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) ->
     # / phase 8 exit criterion 2: visible failure modes for a triage tool.)
     auth_warning = next(
         (w for w in result.warnings
-         if "AGENTOPS_GITHUB_TOKEN" in w or "Validation Failed" in w
+         if "AGENTOPS_GITHUB_TOKEN" in w
+         or "rate limit" in w.lower()
+         or "Validation Failed" in w
          or "github issues search failed" in w.lower()),
         None,
     )
@@ -503,6 +505,8 @@ def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) ->
         banner = (
             '<div class="banner-auth">'
             '<strong>GitHub auth required for issue/PR search.</strong><br>'
+            'If you are hitting <em>rate limits</em> instead (the common case '
+            'for anonymous browsing), the fix is the same: set<br>'
             'Set <code>AGENTOPS_GITHUB_TOKEN</code> in the server '
             'environment, or pass <code>github_token=...</code> to the '
             f'flow.<br><em style="font-size:12px;opacity:0.85">{_html.escape(auth_warning)}</em>'

@@ -126,7 +126,7 @@ def test_read_evidence_404_raises_mcp_error(httpx_mock) -> None:
         adapter.read_evidence("9999")
 
 
-def test_search_evidence_403_raises_mcp_error_permission_denied(httpx_mock) -> None:
+def test_search_evidence_403_rate_limit_raises_mcp_error_rate_limit(httpx_mock) -> None:
     httpx_mock.add_response(
         url=_SEARCH_URL_RE,
         status_code=403,
@@ -135,7 +135,7 @@ def test_search_evidence_403_raises_mcp_error_permission_denied(httpx_mock) -> N
     adapter = GitHubIssueAdapter(owner="acme", repo="widget", token="tok123")
     with pytest.raises(MCPError) as exc_info:
         adapter.search_evidence("checkpointer")
-    assert exc_info.value.kind == "permission_denied"
+    assert exc_info.value.kind == "rate_limit"
 
 
 def test_network_error_is_normalized_through_classify_mcp_error(httpx_mock) -> None:
