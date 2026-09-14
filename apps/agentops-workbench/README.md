@@ -53,6 +53,45 @@ AGENTOPS_PROVIDER=minimax uv run uvicorn agentops_workbench.api.server:app --por
 AGENTOPS_PROVIDER=minimax uv run streamlit run streamlit_app/app.py
 ```
 
+## OSS Maintainer Helper (web)
+
+Once the API is running, open **<http://127.0.0.1:8000/oss-helper>** in a
+browser. Paste a public GitHub repo URL (optionally + an issue number or
+a free-text question) and the tool retrieves that repo's own docs/README
+(via `git sparse-checkout`) and Issues/PRs (via the GitHub REST API),
+then answers with citations — no login, no write-back to the target
+repo. Self-contained HTML, no Streamlit dependency.
+
+The same flow is callable from Python for scripted eval / agentic
+tooling / CI smoke:
+
+```bash
+uv run python -c "
+from agentops_workbench.oss_helper import run_oss_helper
+r = run_oss_helper(
+    'https://github.com/octocat/hello-world',
+    question='how do I install?',
+)
+print(r.answer)
+print('wiki_refs:', len(r.wiki_refs), 'issue_refs:', len(r.issue_refs))
+print(f'took {r.duration_ms}ms')
+"
+```
+
+A real run against `octocat/hello-world` (this repo has no README/docs,
+so the wiki side is correctly empty and the LLM refuses rather than
+hallucinates):
+
+```
+Answer: I searched the corpus and found no direct match.
+        Could you provide the project name or specific error message?
+wiki_refs: 0  issue_refs: 3  took 3619ms
+```
+
+See [`src/agentops_workbench/oss_helper.py`](src/agentops_workbench/oss_helper.py)
+for the implementation, [ADR-0008](docs/adr/0008-github-url-cli-and-deployment-target.md)
+for the design rationale, and PR #36 for the full PR description.
+
 ## Live provider setup
 
 `provider=local-fake` is the dev default. For live experiments, set `provider=minimax` (or `anthropic`). Get a key from your MiniMax dashboard and put it into your local `.env`
