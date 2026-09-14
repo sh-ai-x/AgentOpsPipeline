@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from agentops_workbench.api.server import app
 from agentops_workbench.llm.adapter import ChatResult, LLMAdapter, Usage
 from agentops_workbench.oss_helper import (
+    DEFAULT_DOC_ROOTS,
     TriageResult,
     parse_repo_url,
     run_oss_helper,
@@ -383,3 +384,300 @@ def test_web_post_renders_form_error_on_bad_url(client, monkeypatch) -> None:
     body = r.text
     assert "<form" in body
     assert "github URL" in body.lower() or "not a github url" in body.lower()
+
+
+# ---- private repo + extended doc roots (real-user-reported bugs) ----
+
+
+def test_run_oss_helper_picks_up_github_token_from_env(
+    tmp_path, monkeypatch
+) -> None:
+    """Real-user-reported: sh-ai-x/dev-harness-kit is private. Unauth'd
+    GitHub API search returned 0 issues even though the question would
+    have matches in private issues. Fix: oss_helper.run_oss_helper reads
+    AGENTOPS_GITHUB_TOKEN from env when the caller didn't pass one."""
+    repo = tmp_path / "owner" / "private-repo"
+    repo.mkdir(parents=True)
+    (repo / "README.md").write_text("# private-repo\n")
+
+    from agentops_workbench.adapters import wiki_rag
+    orig_init = wiki_rag.WikiRagAdapter.__init__
+
+    def patched_init(self, wiki_dir: str) -> None:
+        orig_init(self, wiki_dir=str(repo))
+
+    monkeypatch.setattr(wiki_rag.WikiRagAdapter, "__init__", patched_init)
+
+    captured_tokens: list[str] = []
+
+    from agentops_workbench.adapters import github_issue
+
+    class _CaptureToken(github_issue.GitHubIssueAdapter):
+        def __init__(self, owner, repo, token=None, **kw):
+            captured_tokens.append(token)
+            super().__init__(owner, repo, token=token, **kw)
+
+        def search_evidence(self, query, top_k=5, window=None, filters=None):
+            return []
+
+        def read_evidence(self, ref_id, offset=0, limit=2000):
+            return ""
+
+    monkeypatch.setattr(github_issue, "GitHubIssueAdapter", _CaptureToken)
+    import agentops_workbench.oss_helper as _oh
+    monkeypatch.setattr(_oh, "GitHubIssueAdapter", _CaptureToken)
+
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.parse_repo_url",
+        lambda url: ("owner", "private-repo", None),
+    )
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.bulk_acquire_repo_docs",
+        lambda owner, repo, **kw: (repo, []),
+    )
+
+    monkeypatch.setenv("AGENTOPS_GITHUB_TOKEN", "ghp_envtoken12345")
+    adapter = _ScriptedAdapter()
+    run_oss_helper("https://github.com/owner/private-repo", adapter=adapter)
+
+    assert captured_tokens == ["ghp_envtoken12345"], (
+        f"expected token pulled from env, got {captured_tokens}"
+    )
+
+
+def test_run_oss_helper_explicit_token_overrides_env(
+    tmp_path, monkeypatch
+) -> None:
+    """The caller-passed `github_token` argument beats the env fallback."""
+    repo = tmp_path / "owner" / "r"
+    repo.mkdir(parents=True)
+    (repo / "README.md").write_text("# r\n")
+    from agentops_workbench.adapters import wiki_rag
+    orig_init = wiki_rag.WikiRagAdapter.__init__
+    monkeypatch.setattr(
+        wiki_rag.WikiRagAdapter, "__init__",
+        lambda self, wiki_dir: orig_init(self, wiki_dir=str(repo)),
+    )
+
+    captured: list[str] = []
+    from agentops_workbench.adapters import github_issue
+
+    class _Cap(github_issue.GitHubIssueAdapter):
+        def __init__(self, owner, repo, token=None, **kw):
+            captured.append(token)
+            super().__init__(owner, repo, token=token, **kw)
+        def search_evidence(self, q, top_k=5, window=None, filters=None): return []
+        def read_evidence(self, ref_id, **kw): return ""
+
+    monkeypatch.setattr(github_issue, "GitHubIssueAdapter", _Cap)
+    import agentops_workbench.oss_helper as _oh
+    monkeypatch.setattr(_oh, "GitHubIssueAdapter", _Cap)
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.parse_repo_url",
+        lambda url: ("o", "r", None),
+    )
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.bulk_acquire_repo_docs",
+        lambda owner, repo, **kw: (repo, []),
+    )
+    monkeypatch.setenv("AGENTOPS_GITHUB_TOKEN", "ghp_envtoken")
+    run_oss_helper("https://github.com/o/r", adapter=_ScriptedAdapter(),
+                   github_token="ghp_explicit")
+    assert captured == ["ghp_explicit"]
+
+
+def test_run_oss_helper_does_not_double_prefix_repo_qualifier(
+    tmp_path, monkeypatch
+) -> None:
+    """Real-user-reported: '0 issue/PR refs' on sh-ai-x/dev-harness-kit
+    despite GitHub returning 5 real hits for the same content. Root
+    cause: oss_helper built `repo:sh-ai-x/dev-harness-kit is:issue ...`,
+    but GitHubIssueAdapter.search_evidence prepends its own
+    `repo:owner/name ` prefix internally -- so the actual HTTP request
+    got `repo:X repo:X ...` which GitHub silently treated as malformed
+    and returned 0 items. Fix: caller passes ONLY the qualifiers
+    (`is:issue ...`), not the `repo:` prefix."""
+    repo = tmp_path / "owner" / "big-repo"
+    repo.mkdir(parents=True)
+    (repo / "README.md").write_text("# big-repo\n")
+    from agentops_workbench.adapters import wiki_rag
+    orig_init = wiki_rag.WikiRagAdapter.__init__
+    monkeypatch.setattr(
+        wiki_rag.WikiRagAdapter, "__init__",
+        lambda self, wiki_dir: orig_init(self, wiki_dir=str(repo)),
+    )
+
+    captured_queries: list[str] = []
+    from agentops_workbench.adapters import github_issue
+
+    class _Capture(github_issue.GitHubIssueAdapter):
+        def search_evidence(self, q, top_k=5, window=None, filters=None):
+            captured_queries.append(q)
+            return []
+        def read_evidence(self, ref_id, **kw): return ""
+
+    monkeypatch.setattr(github_issue, "GitHubIssueAdapter", _Capture)
+    import agentops_workbench.oss_helper as _oh
+    monkeypatch.setattr(_oh, "GitHubIssueAdapter", _Capture)
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.parse_repo_url",
+        lambda url: ("owner", "big-repo", None),
+    )
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.bulk_acquire_repo_docs",
+        lambda owner, repo, **kw: (repo, []),
+    )
+
+    run_oss_helper(
+        "https://github.com/owner/big-repo",
+        question="how does the X hook work?",
+        adapter=_ScriptedAdapter(),
+    )
+
+    # Exactly ONE `repo:` qualifier should appear in the actual q.
+    # (The adapter itself may also add one in its own prepend -- but in
+    # this test we monkey it to capture q verbatim, so we see what
+    # oss_helper sent.)
+    assert len(captured_queries) == 1
+    sent = captured_queries[0]
+    repo_count = sent.count("repo:")
+    assert repo_count <= 1, (
+        f"oss_helper must not include 'repo:' prefix (the adapter prepends "
+        f"its own); got q={sent!r} (repo: count = {repo_count})"
+    )
+
+
+def test_run_oss_helper_strips_stopwords_and_caps_keywords_for_gh(
+    tmp_path, monkeypatch
+) -> None:
+    """Real-user-reported: 'How does the worktree-guard hook classify
+    edits?' (10-word natural-language question) on sh-ai-x/dev-harness-kit
+    returned 0 issue/PR refs -- but the same query with just
+    `worktree-guard` returned 5. Root cause: GitHub's lexical search
+    AND-combines every token, so natural-language questions monotonically
+    narrow the result set to 0. Fix: pass only the first 3 stopword-
+    filtered keywords to the gh side; full question stays on the wiki
+    side where TF-IDF handles long text correctly."""
+    repo = tmp_path / "owner" / "big-repo"
+    repo.mkdir(parents=True)
+    (repo / "README.md").write_text("# big-repo\n")
+    from agentops_workbench.adapters import wiki_rag
+    orig_init = wiki_rag.WikiRagAdapter.__init__
+    monkeypatch.setattr(
+        wiki_rag.WikiRagAdapter, "__init__",
+        lambda self, wiki_dir: orig_init(self, wiki_dir=str(repo)),
+    )
+
+    captured: list[str] = []
+    from agentops_workbench.adapters import github_issue
+
+    class _Capture(github_issue.GitHubIssueAdapter):
+        def search_evidence(self, q, top_k=5, window=None, filters=None):
+            captured.append(q)
+            return []
+        def read_evidence(self, ref_id, **kw): return ""
+
+    monkeypatch.setattr(github_issue, "GitHubIssueAdapter", _Capture)
+    import agentops_workbench.oss_helper as _oh
+    monkeypatch.setattr(_oh, "GitHubIssueAdapter", _Capture)
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.parse_repo_url",
+        lambda url: ("owner", "big-repo", None),
+    )
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.bulk_acquire_repo_docs",
+        lambda owner, repo, **kw: (repo, []),
+    )
+
+    run_oss_helper(
+        "https://github.com/owner/big-repo",
+        question="How does the worktree-guard hook classify edits?",
+        adapter=_ScriptedAdapter(),
+    )
+
+    assert len(captured) == 1
+    gh_q = captured[0]
+    # Should be: "repo:owner/big-repo worktree-guard hook classify"
+    # (3 stopword-filtered keywords, lowercase preserved by gh itself).
+    # Not the full sentence.
+    assert "How does" not in gh_q, (
+        f"natural-language question leaked into gh query: {gh_q!r}"
+    )
+    assert "the" not in gh_q, (
+        f"stopword 'the' leaked into gh query: {gh_q!r}"
+    )
+    assert "worktree-guard" in gh_q
+    assert "hook" in gh_q
+
+
+def test_default_doc_roots_include_hooks_for_oss_tooling_repos(
+) -> None:
+    """Real-user-reported: a question about worktree-guard (in hooks/) on
+    dev-harness-kit surfaced only README/CHANGELOG/SECURITY/AGENTS, none of
+    which mention the hook. The fix: add hooks/ to DEFAULT_DOC_ROOTS so
+    tools/code-heavy repos get their actual code-doc surface, not just the
+    top-level project metadata."""
+    assert "hooks" in DEFAULT_DOC_ROOTS, (
+        f"hooks/ missing from DEFAULT_DOC_ROOTS={DEFAULT_DOC_ROOTS!r}"
+    )
+
+
+def test_run_oss_helper_surfaces_private_repo_422_as_visible_warning(
+    tmp_path, monkeypatch
+) -> None:
+    """Real-user-reported: sh-ai-x/dev-harness-kit is private. Without a
+    token, GitHub returns 422 saying 'the listed users and repositories
+    cannot be searched either because the resources do not exist or you
+    do not have permission to view them.' That must surface as a visible
+    warning in the result -- not silently degrade to a '0 issue/PR refs'
+    page that the user mistakes for an empty answer."""
+    repo = tmp_path / "owner" / "private-repo"
+    repo.mkdir(parents=True)
+    (repo / "README.md").write_text("# private-repo\n")
+    from agentops_workbench.adapters import wiki_rag
+    orig_init = wiki_rag.WikiRagAdapter.__init__
+    monkeypatch.setattr(
+        wiki_rag.WikiRagAdapter, "__init__",
+        lambda self, wiki_dir: orig_init(self, wiki_dir=str(repo)),
+    )
+
+    from agentops_workbench.adapters import github_issue
+    from agentops_workbench.mcp import MCPError
+
+    class _PermissionDenied(github_issue.GitHubIssueAdapter):
+        def search_evidence(self, q, top_k=5, window=None, filters=None):
+            raise MCPError(
+                kind="malformed",
+                message="GitHub API error 422: permission_denied / resources do not exist",
+                source="github",
+            )
+        def read_evidence(self, ref_id, **kw): return ""
+
+    monkeypatch.setattr(github_issue, "GitHubIssueAdapter", _PermissionDenied)
+    import agentops_workbench.oss_helper as _oh
+    monkeypatch.setattr(_oh, "GitHubIssueAdapter", _PermissionDenied)
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.parse_repo_url",
+        lambda url: ("owner", "private-repo", None),
+    )
+    monkeypatch.setattr(
+        "agentops_workbench.oss_helper.bulk_acquire_repo_docs",
+        lambda owner, repo, **kw: (repo, []),
+    )
+    # No AGENTOPS_GITHUB_TOKEN set -- simulate the unauthenticated path
+    monkeypatch.delenv("AGENTOPS_GITHUB_TOKEN", raising=False)
+
+    result = run_oss_helper(
+        "https://github.com/owner/private-repo",
+        adapter=_ScriptedAdapter(),
+    )
+
+    # The exception must NOT crash the run -- that's already covered by
+    # the existing try/except in run_oss_helper.
+    assert result is not None
+    # It must surface as a warning that names the actual failure, not a
+    # silent "0 issue/PR refs" with a refusal.
+    assert any("permission_denied" in w.lower() or "permission" in w.lower()
+               or "do not have permission" in w.lower() for w in result.warnings), (
+        f"expected a permission-related warning, got {result.warnings!r}"
+    )

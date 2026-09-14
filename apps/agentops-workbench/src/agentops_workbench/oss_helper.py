@@ -24,6 +24,7 @@ citations, raw per-source counts, and any acquisition warnings.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -42,7 +43,9 @@ log = logging.getLogger(__name__)
 
 
 # Default doc roots we attempt to bulk-acquire from any GitHub repo.
-# Override per-call if needed.
+# Override per-call if needed. `hooks/` covers OSS tooling repos
+# (worktree-guard, CI templates, etc.) where the actual project docs
+# live in the hooks/ subdirectory rather than the top-level README.
 DEFAULT_DOC_ROOTS: tuple[str, ...] = (
     "README.md",
     "README.rst",
@@ -50,6 +53,7 @@ DEFAULT_DOC_ROOTS: tuple[str, ...] = (
     "docs",
     "doc",
     "documentation",
+    "hooks",
     "CONTRIBUTING.md",
 )
 
@@ -277,7 +281,18 @@ def run_oss_helper(
 
     # Construct the two adapters.
     wiki = WikiRagAdapter(wiki_dir=str(work))
-    issue_adapter = GitHubIssueAdapter(owner=owner, repo=repo, token=github_token)
+    # Caller-passed token beats env fallback. Env fallback beats no token.
+    # Without it, GitHub returns 422 for private repos (not even a 403 --
+    # the search endpoint refuses to confirm the repo exists) and the user
+    # sees a "no match" page that was actually a permission error.
+    effective_token = (
+        github_token
+        if github_token is not None
+        else os.environ.get("AGENTOPS_GITHUB_TOKEN")
+    )
+    issue_adapter = GitHubIssueAdapter(
+        owner=owner, repo=repo, token=effective_token,
+    )
 
     # Search both sources. Per-source top-k; never merge-ranked across
     # adapters (different scoring distributions).
@@ -295,12 +310,46 @@ def run_oss_helper(
     # to 200 chars). When no question is given, search the repo's open
     # issues broadly via the qualifier `repo:owner/name is:issue is:open`
     # so we always have something to anchor the LLM's answer.
-    base = f"repo:{owner}/{repo} is:issue is:open"
+    #
+    # Subtle: GitHubIssueAdapter.search_evidence prepends its own
+    # `repo:owner/name ` prefix internally. We must NOT include it
+    # here or the actual HTTP request gets sent with `repo:X repo:X ...`
+    # which GitHub silently treats as a malformed query and returns 0
+    # results -- not an error, just no hits. Pass only the qualifiers
+    # plus a short keyword fragment of the question.
+    #
+    # Second subtle: GitHub's lexical search treats natural-language
+    # sentences as AND-of-all-tokens -- adding more tokens monotonically
+    # narrows the result set. A 10-word question often narrows to 0
+    # results even though a 2-word substring gives 5. So we pass only
+    # the 3 most discriminating keywords (after stopword filtering) to
+    # the gh side, while the full question goes to the wiki side where
+    # TF-IDF scoring handles long text correctly.
+    base = "is:issue is:open"
     if issue is not None:
-        base = f"repo:{owner}/{repo} is:issue {issue}"
-    question_fragment = (question or "").strip().splitlines()[0] if question else ""
-    question_fragment = question_fragment[:120].strip()
-    gh_query = (base + (" " + question_fragment if question_fragment else "")).strip()
+        base = f"is:issue {issue}"
+    _STOPWORDS = frozenset(
+        "the a an is in on at to for of and or how do does i me my you we they it "
+        "this that these those is are was were be been being have has had do does did "
+        "a an the".split()
+    )
+    # Split on whitespace, then strip non-alnum (keeping hyphens, which
+    # are common in code identifiers like 'worktree-guard'). Re-join so
+    # 'worktree-guard' stays one keyword token, but punctuation noise
+    # like 'edits?' becomes 'edits'.
+    keywords: list[str] = []
+    for raw in (question or "").lower().split():
+        if not raw:
+            continue
+        # Keep the token but strip trailing/leading punctuation
+        cleaned = raw.strip(".,;:?!'\"`()[]{}*")
+        if not cleaned or cleaned in _STOPWORDS:
+            continue
+        if len(cleaned) <= 2:
+            continue
+        keywords.append(cleaned)
+    keywords_str = " ".join(keywords[:3])
+    gh_query = (base + (" " + keywords_str if keywords_str else "")).strip()
     # GitHub enforces 256 chars on /search/issues; truncate defensively.
     if len(gh_query) > 256:
         gh_query = gh_query[:256]
