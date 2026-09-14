@@ -399,7 +399,6 @@ docs and issues/PRs.</p>
          placeholder="issue #">
   <button type="submit">Run</button>
 </form>
-''' + '{repo_url_value}' + '''
 </body></html>'''
 
 # No global state needed: repo_url_value is interpolated per-request below
@@ -470,7 +469,7 @@ def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) ->
         f'<span class="meta-chip">issues/PRs: <strong>{len(result.issue_refs)}</strong></span>'
         f'<span class="meta-chip">duration: <strong>{result.duration_ms}ms</strong></span>'
         f'<span class="meta-chip">provider: <strong>{_html.escape(_provider_name())}</strong></span>'
-        f'{_html.escape(issue_label)}'
+        f'{issue_label}'
         f'</div>'
     )
 

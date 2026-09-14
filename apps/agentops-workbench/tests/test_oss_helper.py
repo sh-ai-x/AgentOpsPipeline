@@ -346,6 +346,65 @@ def test_run_oss_helper_truncates_long_question_for_gh_256_limit(
     assert "Docs evidence" in adapter.calls[0][0]["content"]
 
 
+
+def test_web_post_renders_issue_focus_with_middot_entity(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real-user-reported by /dev-kit:review (PR #38 critical finding 1).
+    The issue-focus label was constructed with the HTML entity &middot;,
+    but _html.escape() on the whole label converts & to &amp;, rendering
+    the literal text ' &amp;middot; focused on issue #42' instead of
+    the bullet. Fix: emit the label with the entity intact (no escape)."""
+    from agentops_workbench.oss_helper import TriageResult
+    fake = TriageResult(
+        owner="octocat", repo="hello-world", issue_number=42,
+        question=None, answer="x", wiki_refs=[], issue_refs=[],
+        warnings=[], duration_ms=0,
+    )
+    monkeypatch.setattr("agentops_workbench.oss_helper.run_oss_helper", lambda *a, **kw: fake)
+    r = client.post(
+        "/oss-helper",
+        data={"repo_url": "https://github.com/octocat/hello-world",
+              "question": "", "issue_number": "42"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    body = r.text
+    assert "&middot;" in body, "no middot entity in body"
+    assert "&amp;middot;" not in body, f"entity was over-escaped: {body[:300]!r}"
+    assert "focused on issue #42" in body
+
+def test_web_post_renders_repo_url_only_once(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real-user-reported by /dev-kit:review (PR #38 major finding 2).
+    The visual-redesign commit left a stale '{repo_url_value}'
+    artifact after </form>, which renders the URL a SECOND time as visible
+    text below the input. Fix: collapse the template so the URL appears
+    once (inside the value= attribute only)."""
+    from agentops_workbench.oss_helper import TriageResult
+    fake = TriageResult(
+        owner="octocat", repo="hello-world", issue_number=None,
+        question=None, answer="x", wiki_refs=[], issue_refs=[],
+        warnings=[], duration_ms=0,
+    )
+    monkeypatch.setattr("agentops_workbench.oss_helper.run_oss_helper", lambda *a, **kw: fake)
+    r = client.post(
+        "/oss-helper",
+        data={"repo_url": "https://github.com/octocat/hello-world",
+              "question": "", "issue_number": ""},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    body = r.text
+    count = body.count("https://github.com/octocat/hello-world")
+    assert count == 2, f"repo URL appeared {count} times, expected 2 (badge link + input value)"
+    # Sanity: there should be exactly two references -- the clickable
+    # badge in the hero, and the form input carrying the URL forward.
+    # If a future refactor adds a third (e.g. the original bug where the
+    # URL leaked as visible text below the form) the count goes to 3
+    # and this test fails.
+    assert count != 3, "repo URL appeared 3 times -- likely the duplicate-URL bug regressed"
 # ---- web route ----
 
 
