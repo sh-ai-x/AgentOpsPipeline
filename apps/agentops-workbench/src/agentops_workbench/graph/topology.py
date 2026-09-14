@@ -12,7 +12,7 @@ from .single_agent import SingleAgentOutput, run_single_agent
 
 def fixed(adapter: LLMAdapter, task: str) -> dict[str, Any]:
     out: GraphOutput = run_fixed_graph(adapter, task)
-    return {"state": out.state, "answer": out.answer, "route": out.route}
+    return {"state": out.state, "answer": out.answer, "route": out.route, "tool_results": []}
 
 
 def single_agent(adapter: LLMAdapter, task: str) -> dict[str, Any]:
