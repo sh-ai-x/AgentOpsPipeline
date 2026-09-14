@@ -93,19 +93,28 @@ def test_held_out_split_has_six_cases(repo_root: Path) -> None:
 # tool_correctness scoring (both were silently missing before this fix) ----
 
 
-def test_run_held_out_includes_all_three_topologies(
+def test_run_held_out_selected_topologies_derived_from_registry(
     repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """selected_topologies must cover all three registered topologies --
-    planner_executor was silently excluded before this fix, so its
-    tool-execution path was never exercised by the held-out benchmark."""
+    """selected_topologies must cover ALL registered topologies --
+    deriving from graph.topology.TOPOLOGIES means a future fourth topology
+    registers here automatically instead of needing a second silent-
+    exclusion fix.
+
+    Counts derived from the same constants the runner uses (len(held) x
+    N_TRIALS x len(selected)) so a future bump to N_TRIALS or a new held-
+    out case doesn't break this regression for unrelated reasons.
+    """
     monkeypatch.setenv("AGENTOPS_PROVIDER", "local-fake")
-    from agentops_workbench.experiments.run_held_out import run
+    from agentops_workbench.benchmark.load import load_split
+    from agentops_workbench.experiments.run_held_out import N_TRIALS, run
 
     outcomes, manifest = run(repo_root, output_dir=tmp_path)
-    assert set(manifest.selected_topologies) == {"fixed", "single_agent", "planner_executor"}
-    assert {o.topology for o in outcomes} == {"fixed", "single_agent", "planner_executor"}
-    assert len(outcomes) == 6 * 2 * 3  # 6 held-out cases x 2 trials x 3 topologies
+    held = load_split(repo_root / "fixtures" / "cases" / "held_out", "held_out")
+    from agentops_workbench.graph.topology import TOPOLOGIES
+    assert set(manifest.selected_topologies) == set(TOPOLOGIES.keys())
+    assert {o.topology for o in outcomes} == set(TOPOLOGIES.keys())
+    assert len(outcomes) == len(held) * N_TRIALS * len(TOPOLOGIES)
 
 
 def test_run_held_out_scores_tool_correctness_from_real_tool_results(
@@ -113,12 +122,21 @@ def test_run_held_out_scores_tool_correctness_from_real_tool_results(
 ) -> None:
     """tool_correctness must reflect the run's actual tool_results, not an
     always-[] placeholder -- otherwise it stays 0.0 forever regardless of
-    whether the graph really called a tool (the bug this regression pins:
-    the scorer was never wired to run_topology()'s output at all)."""
+    whether the graph really called a tool.
+
+    Both fixes in this commit matter for this test: (1) every wrapper in
+    graph/topology.py guarantees a tool_results key, so the runner no
+    longer needs topology-specific knowledge, and (2) the runner reads
+    result[tool_results] instead of an always-[] placeholder.
+    """
     monkeypatch.setenv("AGENTOPS_PROVIDER", "local-fake")
     import agentops_workbench.experiments.run_held_out as mod
+    from agentops_workbench.benchmark.load import load_split
 
     def _fake_run_topology(name: str, adapter, task: str) -> dict:
+        # Every wrapper must surface tool_results per the topology
+        # contract -- empty for fixed/single_agent, the real list for
+        # planner_executor.
         if name == "planner_executor":
             return {
                 "answer": "ok",
@@ -129,24 +147,26 @@ def test_run_held_out_scores_tool_correctness_from_real_tool_results(
                      "error_kind": None, "args": {}},
                 ],
             }
-        return {"answer": "ok"}
+        return {"answer": "ok", "tool_results": []}
 
     monkeypatch.setattr(mod, "run_topology", _fake_run_topology)
     outcomes, _ = mod.run(repo_root, output_dir=tmp_path)
+    held = load_split(repo_root / "fixtures" / "cases" / "held_out", "held_out")
 
-    # case-025's allowed_tools are exactly [search_docs, read_document] --
-    # both were "called" above, so every planner_executor call on it is
-    # correct.
-    case_025 = [o for o in outcomes if o.topology == "planner_executor" and o.case_id == "case-025"]
-    assert case_025
-    for o in case_025:
+    # Pick a held-out case whose allowed_tools we can match against the
+    # fake planner_executor tool_results -- decouples the assertion from
+    # any one specific case content.
+    planner_case = next(c for c in held if "search_docs" in c.allowed_tools and "read_document" in c.allowed_tools)
+    planner_runs = [o for o in outcomes if o.topology == "planner_executor" and o.case_id == planner_case.id]
+    assert planner_runs
+    for o in planner_runs:
         assert o.tool_correctness == 1.0
-    # fixed/single_agent never return tool_results here -- must stay 0.0,
-    # unchanged (the .get(..., []) default preserves this).
+    # fixed/single_agent return empty tool_results -- must stay 0.0, by design.
     other = [o for o in outcomes if o.topology != "planner_executor"]
     assert other
     for o in other:
         assert o.tool_correctness == 0.0
+
 
 
 def test_spend_ceiling_blocks_overrun() -> None:

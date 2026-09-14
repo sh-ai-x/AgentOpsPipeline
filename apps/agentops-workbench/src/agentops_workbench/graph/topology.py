@@ -1,4 +1,11 @@
-"""Topology registry — fixed / single_agent / planner_executor under one interface."""
+"""Topology registry — fixed / single_agent / planner_executor under one interface.
+
+Every wrapper returns a dict that ALWAYS includes a `tool_results` key
+(possibly empty). This is the contract downstream consumers (e.g. the
+held-out runner, the tool-call scoring pipeline) rely on -- so they
+never need topology-specific knowledge of which wrappers expose the
+key and which don't.
+"""
 from __future__ import annotations
 
 from collections.abc import Callable
