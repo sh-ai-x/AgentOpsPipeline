@@ -72,3 +72,6 @@ target/
 logs/
 # <<< dev-kit <<<
 .worktrees/
+
+# Local measurement / trace (apps/* variant)
+apps/*/.dev-kit/trace/

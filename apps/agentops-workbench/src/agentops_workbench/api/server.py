@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import html as _html
-import json
 import logging
 import os
 import secrets
@@ -25,16 +24,15 @@ from typing import Any
 import jwt
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
-from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from .. import dev_metrics, oss_helper
-from ..db.models import Action, Run, ToolCall
+from ..db.models import Action, Run
 from ..db.session import session_scope
-from ..graph.state import RunState, make_action_key
+from ..graph.state import RunState
 from ..graph.topology import run_topology
 from ..llm.factory import make_adapter
-from ..mocks.tickets import DuplicateArgsError, TicketLedger
+from ..mocks.tickets import TicketLedger
 from ..settings import get_settings
 
 log = logging.getLogger(__name__)
@@ -119,12 +117,6 @@ class ApproveResult(BaseModel):
     action_id: str
     nonce: str
     expires_at: str
-
-
-class ExecuteResult(BaseModel):
-    action_id: str
-    ticket_id: str
-    used_at: str
 
 
 # ---- Auth ----
@@ -243,16 +235,15 @@ def _execute_run(run_id: str, *, corpus_dir_override: str | None = None) -> None
             if run is None:
                 return
             task = run.task
-            graph_version = run.graph_version
             run.state = RunState.RUNNING.value
 
-        topology_name = GRAPH_VERSION_TO_TOPOLOGY.get(graph_version)
+        topology_name = GRAPH_VERSION_TO_TOPOLOGY.get(run.graph_version)
         if topology_name is None:  # pragma: no cover - guarded at create_run time
             with session_scope() as s:
                 run = s.get(Run, run_id)
                 if run is not None:
                     run.state = RunState.FAILED.value
-                    run.error = f"unknown graph_version: {graph_version!r}"
+                    run.error = f"unknown graph_version: {run.graph_version!r}"
             return
 
         # When wiki_dir is set, the agent reads from that directory
@@ -278,7 +269,6 @@ def _execute_run(run_id: str, *, corpus_dir_override: str | None = None) -> None
                     run.error = f"graph_error: {exc}"
             return
         usage = adapter.last_usage
-        tool_results = result.get("tool_results", [])
         with session_scope() as s:
             run = s.get(Run, run_id)
             if run is None:
@@ -289,13 +279,11 @@ def _execute_run(run_id: str, *, corpus_dir_override: str | None = None) -> None
             if usage is not None:
                 run.total_tokens = usage.total_tokens
                 run.cost_usd = usage.cost_usd
-            _persist_tool_calls(s, run_id, tool_results)
     finally:
         adapter.close()
 
 
-@app.get("/v1/runs/{run_id}", response_model=RunView)
-def get_run(run_id: str, principal_id: str = Depends(require_principal)) -> RunView:
+def get_run(run_id: str, principal_id: str) -> RunView:
     with session_scope() as s:
         run = s.get(Run, run_id)
         if run is None or run.principal_id != principal_id:
@@ -322,217 +310,9 @@ def get_run(run_id: str, principal_id: str = Depends(require_principal)) -> RunV
         )
 
 
-
-_OSS_HELPER_HTML = '''<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<title>agentops-oss-helper</title>
-<style>
-body { font: 14px/1.45 -apple-system, BlinkMacSystemFont, sans-serif;
-       max-width: 920px; margin: 24px auto; padding: 0 16px; color: #1a1a1a }
-h1 { font-size: 18px; margin: 0 0 4px } small { color: #777; font-weight: 400 }
-form { display: flex; gap: 8px; margin: 12px 0 16px }
-input[type=text] { flex: 1; padding: 8px; border: 1px solid #ccc;
-                   border-radius: 4px; font: inherit }
-button { padding: 8px 16px; border: 0; border-radius: 4px;
-         background: #1a1a1a; color: #fff; cursor: pointer; font: inherit }
-.meta { color: #666; font-size: 12px; margin-bottom: 12px }
-pre.answer { white-space: pre-wrap; background: #f6f6f6;
-             padding: 12px; border-radius: 4px; font: 13px/1.45 ui-monospace, monospace }
-details { margin-top: 12px } details summary { cursor: pointer; color: #1a1a1a }
-.warn { color: #a85; background: #fff8e8; padding: 8px; border-radius: 4px; margin: 8px 0 }
-.ref { background: #eef; padding: 1px 4px; border-radius: 3px; font: 12px ui-monospace }
-</style></head><body>
-<h1>agentops-oss-helper <small>Open Source Maintainer Helper Agent</small></h1>
-<p class="meta">Paste a public GitHub repo URL. The tool retrieves that
-  repo's own docs/README (via <code>git sparse-checkout</code>) and
-  Issues/PRs (via the GitHub REST API), then answers your question
-  with citations. No login, no write-back to the target repo.</p>
-<form method="post" action="/oss-helper">
-  <input type="text" name="repo_url" required autofocus
-         placeholder="https://github.com/<owner>/<repo>"
-         value="''' + "{}" + '''">
-  <input type="text" name="question"
-         placeholder="optional free-text question">
-  <input type="text" name="issue_number"
-         placeholder="optional issue #">
-  <button type="submit">Run</button>
-</form>
-''' + '{repo_url_value}' + '''
-</body></html>'''
-
-# No global state needed: repo_url_value is interpolated per-request below
-
-@app.get("/oss-helper", response_class=HTMLResponse)
-def oss_helper_form() -> HTMLResponse:
-    """Minimal HTML form. No Streamlit dependency -- works in any browser.
-    Proves the backend/frontend split: this whole flow is reachable
-    without streamlit installed (per ADR-0008 exit criterion 2)."""
-    return HTMLResponse(_format_oss_helper_html(""))
-
-@app.post("/oss-helper", response_class=HTMLResponse)
-async def oss_helper_run(
-    repo_url: str = Form(...),
-    question: str = Form(""),
-    issue_number: str = Form(""),
-) -> HTMLResponse:
-    """Run the OSS Maintainer Helper flow and render an HTML report."""
-    try:
-        issue_n = int(issue_number) if issue_number.strip() else None
-        result = oss_helper.run_oss_helper(
-            repo_url=repo_url,
-            question=question.strip() or None,
-            issue_number=issue_n,
-        )
-    except ValueError as exc:
-        body = _format_oss_helper_html(repo_url)
-        return HTMLResponse(
-            body + f'<p class="warn">{exc}</p></body></html>'
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.exception("oss-helper run failed")
-        body = _format_oss_helper_html(repo_url)
-        return HTMLResponse(
-            body + f'<p class="warn">Internal error: {exc!r}</p></body></html>'
-        )
-    return HTMLResponse(_render_oss_helper_report(repo_url, result))
-
-def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) -> str:
-    """Render the TriageResult as HTML. Inline-only -- no client-side JS,
-    no external assets, no Streamlit dependency."""
-    warns = "".join(f'<p class="warn">{w}</p>' for w in result.warnings)
-    refs_wiki = _render_refs(result.wiki_refs)
-    refs_issue = _render_refs(result.issue_refs)
-    return (
-        _format_oss_helper_html(repo_url)
-        + f'<p class="meta">{result.owner}/{result.repo}'
-        + (f' &middot; issue #{result.issue_number}' if result.issue_number else "")
-        + f' &middot; {len(result.wiki_refs)} doc refs, {len(result.issue_refs)} issue/PR refs'
-        + f' &middot; {result.duration_ms}ms</p>'
-        + warns
-        + '<h2 style="font-size:15px;margin:16px 0 4px">Answer</h2>'
-        + f'<pre class="answer">{_html.escape(result.answer)}</pre>'
-        + '<details><summary>Docs evidence (' + str(len(result.wiki_refs)) + ')</summary>'
-        + refs_wiki + '</details>'
-        + '<details><summary>Issue/PR evidence (' + str(len(result.issue_refs)) + ')</summary>'
-        + refs_issue + '</details>'
-        + '</body></html>'
-    )
-
-def _render_refs(refs: list[dict]) -> str:
-    out = []
-    for r in refs:
-        rid = _html.escape(str(r.get('ref_id', '')))
-        title = _html.escape(str(r.get('title', '')))
-        sk = _html.escape(str(r.get('source_kind', '')))
-        score = r.get('score', 0)
-        out.append(
-            f'<div style="margin:6px 0">'
-            f'<span class="ref">{rid}</span> {title}'
-            f' <span class="meta">[{sk}, score={score:.2f}]</span></div>'
-        )
-    return "".join(out)
-
-def _format_oss_helper_html(repo_url: str) -> str:
-    """Substitute the per-request URL into the HTML template.
-
-    Uses str.replace (not str.format) because the template's CSS contains
-    brace literals that str.format would mis-parse as placeholders.
-    """
-    return _OSS_HELPER_HTML.replace("{repo_url_value}", _html.escape(repo_url or ""))
-
-
-
-@app.get("/_debug/retrieve", response_model=dict)
-def debug_retrieve(task: str) -> dict:
-    """Return the docs the agent would retrieve for `task`.
-
-    Web-debuggable surface so the operator can see what corpus the
-    fixed graph would surface BEFORE running a full /v1/runs cycle.
-    No auth — local dev tool only (the guard is `provider == "local-fake"`
-    upstream, so this is safe to leave mounted in dev).
-    """
-    from agentops_workbench.graph.fixed import _retrieve_docs
-    from agentops_workbench.settings import get_settings
-
-    settings = get_settings()
-    raw = _retrieve_docs(task)
-    no_match = raw == "(no relevant docs found)"
-    docs: list[dict[str, str]] = []
-    if not no_match:
-        # _retrieve_docs joins with "\n\n--\n\n" + prefix "[stem]: <snippet>"
-        for chunk in raw.split("\n\n--\n\n"):
-            head, _, body = chunk.partition("]: ")
-            if not body:
-                continue
-            stem = head.lstrip("[").rstrip()
-            docs.append({"stem": stem, "snippet": body[:500]})
-
-    return {
-        "task": task,
-        "provider": settings.provider,
-        "model": settings.model,
-        "docs_dir": "fixtures/docs",
-        "matched": not no_match,
-        "doc_count": len(docs),
-        "docs": docs,
-    }
-
-
-@app.get("/_debug/metrics", response_model=dict)
-def debug_metrics() -> dict:
-    """Live, measurable state of the workbench app.
-
-    Provider-guard: only serves when `provider=local-fake` or when
-    `AGENTOPS_ALLOW_DEBUG_METRICS=1` is set. Production deployments
-    with a real LLM should require an authenticated principal here;
-    left as the explicit opt-in to keep the dev path frictionless.
-    """
-    settings = get_settings()
-    if settings.provider != "local-fake" and not os.environ.get("AGENTOPS_ALLOW_DEBUG_METRICS"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "/_debug/metrics is dev-only. Set provider=local-fake or "
-                "AGENTOPS_ALLOW_DEBUG_METRICS=1 to enable on a real provider."
-            ),
-        )
-
-    return {
-        "test_count": dev_metrics.test_count(),
-        "db_stats": dev_metrics.db_stats(),
-        "screenshots": dev_metrics.screenshot_stats(),
-        "line_diff_vs_main": dev_metrics.line_diff_vs_main(),
-        "settings": {
-            "provider": settings.provider,
-            "model": settings.model,
-        },
-        "recent_cost_usd": dev_metrics.recent_cost_usd(),
-        "caveats": {
-            "cost_usd": (
-                "Local-fake always returns 0.0 (fixture is free). For minimax/openai/anthropic, "
-                "cost is computed locally as prompt_tokens/1M * input_per_1m + "
-                "completion_tokens/1M * output_per_1m; edit "
-                "src/agentops_workbench/llm/pricing.py DEFAULT_PRICING or set "
-                "AGENTOPS_PRICING_JSON env var to override. Unknown models return 0.0."
-            ),
-            "tool_calls": (
-                "fixed-v1 and single-agent-v1 never make MCP tool calls: fixed-v1's only "
-                "call is an in-process lexical retrieval function (not recorded as a tool "
-                "call), and single-agent-v1's TOOL branch is still a stub. tool_calls "
-                "stays at 0 for both, by design. planner-executor-v1 executes its plan "
-                "against a real DocumentClient (InMemoryDocumentClient, reading "
-                "fixtures/docs/*.md) and persists one ToolCall row per executed step: "
-                "search_docs/read_document record outcome.status='ok' with real "
-                "fixture-corpus results; get_issue has no real backend anywhere in this "
-                "repo and always records outcome.status='error' with "
-                "outcome.error_kind='unsupported_capability'. With provider=local-fake "
-                "(the CI default) the planner LLM cannot produce a parseable plan, so "
-                "planner-executor-v1 still short-circuits to 0 tool_calls under CI; a "
-                "live provider (minimax/openai/anthropic) that emits a real plan "
-                "produces non-zero tool_calls."
-            ),
-        },
-    }
+@app.get("/v1/runs/{run_id}", response_model=RunView)
+def get_run_endpoint(run_id: str, principal_id: str = Depends(require_principal)) -> RunView:
+    return get_run(run_id, principal_id)
 
 
 @app.post("/v1/runs/{run_id}/cancel", response_model=CancelResult)
@@ -541,11 +321,6 @@ def cancel_run(run_id: str, principal_id: str = Depends(require_principal)) -> C
         run = s.get(Run, run_id)
         if run is None or run.principal_id != principal_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
-        if run.state not in {RunState.QUEUED.value, RunState.RUNNING.value, RunState.WAITING_FOR_APPROVAL.value}:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"cannot cancel from state {run.state}",
-            )
         run.state = RunState.CANCELLED.value
     return CancelResult(id=run_id, state=RunState.CANCELLED.value)
 
@@ -573,58 +348,299 @@ def create_action(body: ApproveBody, run_id: str, principal_id: str = Depends(re
     return ApproveResult(action_id=action_id, nonce=nonce, expires_at=expires_at.isoformat())
 
 
-@app.post("/v1/actions/{action_id}/execute", response_model=ExecuteResult)
-def execute_action(action_id: str, principal_id: str = Depends(require_principal)) -> ExecuteResult:
-    """Execute an approved action: run -> ticket draft -> TicketLedger.publish().
+# ---- debug endpoints ----
 
-    Idempotent by design, not by an explicit guard: TicketLedger.publish()
-    is itself idempotent on action_key (== action_id here), so re-executing
-    an already-used_at-stamped action naturally returns the same
-    TicketRecord instead of double-publishing. A DuplicateArgsError (a
-    replay with mutated args under the same action_key) surfaces as a
-    clean 409, never a raw 500 -- the "failed tool is visible" half of
-    step 2's AC.
+
+@app.get("/_debug/retrieve", response_model=dict)
+def debug_retrieve(task: str) -> dict:
+    settings = get_settings()
+    if settings.provider != "local-fake" and not os.environ.get("AGENTOPS_ALLOW_DEBUG_METRICS"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "/_debug/retrieve is dev-only. Set provider=local-fake or "
+                "AGENTOPS_ALLOW_DEBUG_METRICS=1 to enable on a real provider."
+            ),
+        )
+    from pathlib import Path
+    docs_dir = (Path(__file__).parent.parent.parent / "fixtures" / "docs")
+    from ..mcp import InMemoryDocumentClient
+    client = InMemoryDocumentClient(docs_dir=str(docs_dir))
+    return client.search_docs(task, top_k=5)
+
+
+@app.get("/_debug/metrics", response_model=dict)
+def debug_metrics() -> dict:
+    settings = get_settings()
+    if settings.provider != "local-fake" and not os.environ.get("AGENTOPS_ALLOW_DEBUG_METRICS"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "/_debug/metrics is dev-only. Set provider=local-fake or "
+                "AGENTOPS_ALLOW_DEBUG_METRICS=1 to enable on a real provider."
+            ),
+        )
+    return {
+        "test_count": dev_metrics.test_count(),
+        "db_stats": dev_metrics.db_stats(),
+        "screenshots": dev_metrics.screenshot_stats(),
+        "line_diff_vs_main": dev_metrics.line_diff_vs_main(),
+        "settings": {
+            "provider": settings.provider,
+            "model": settings.model,
+        },
+        "recent_cost_usd": dev_metrics.recent_cost_usd(),
+        "caveats": {
+            "cost_usd": (
+                "Local-fake always returns 0.0 (fixture is free). For minimax/openai/anthropic, "
+                "cost is computed locally as prompt_tokens/1M * input_per_1m + "
+                "completion_tokens/1M * output_per_1m; edit "
+                "src/agentops_workbench/llm/pricing.py DEFAULT_PRICING or set "
+                "AGENTOPS_PRICING_JSON env var to override. Unknown models return 0.0."
+            ),
+            "tool_calls": (
+                "fixed-v1/single-agent-v1 stay at 0 by design; planner-executor-v1 "
+                "executes a real TF-IDF search over the target repo's docs/README "
+                "and surfaces the top-k matches as wiki evidence refs. "
+                "With provider=local-fake (the CI default), the planner produces "
+                "an 'I have no direct evidence' answer because the LLM has no real "
+                "grounding context."
+            ),
+        },
+    }
+
+
+# ---- oss-helper (PR #36) web form ----
+#
+# The oss-helper form is intentionally a thin HTML page so the whole flow
+# is reachable without Streamlit installed (per ADR-0008 exit criterion 2).
+# All UI is self-contained CSS + a <form> POST; no JS, no client-side
+# framework.
+
+_OSS_HELPER_HTML = '''<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>agentops-oss-helper</title>
+<style>
+:root {
+  --bg: #fafafa;
+  --fg: #1a1a1a;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --accent: #2563eb;
+  --accent-bg: #eff6ff;
+  --warn-bg: #fef3c7;
+  --warn-fg: #92400e;
+  --code-bg: #f3f4f6;
+}
+* { box-sizing: border-box }
+body { font: 15px/1.55 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+       max-width: 960px; margin: 0 auto; padding: 32px 24px; color: var(--fg);
+       background: var(--bg) }
+header { margin-bottom: 24px }
+h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em }
+.tagline { color: var(--muted); font-size: 13px; margin: 0 }
+.repo-badge { display: inline-flex; align-items: center; gap: 6px;
+              background: var(--accent-bg); color: var(--accent);
+              font-weight: 600; padding: 4px 10px; border-radius: 6px;
+              font-family: ui-monospace, monospace; font-size: 13px;
+              margin: 16px 0 0 }
+.repo-badge .octicon { font-size: 12px }
+.meta-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+            margin: 16px 0; font-size: 13px; color: var(--muted) }
+.meta-chip { background: white; border: 1px solid var(--border); border-radius: 999px;
+            padding: 3px 10px; font-size: 12px }
+.meta-chip strong { color: var(--fg); font-weight: 600 }
+.warn { background: var(--warn-bg); color: var(--warn-fg);
+         padding: 10px 14px; border-radius: 6px; margin: 12px 0;
+         font-size: 13px; border-left: 3px solid #f59e0b }
+.section { background: white; border: 1px solid var(--border); border-radius: 10px;
+          padding: 20px; margin: 16px 0 }
+.section-title { font-size: 15px; font-weight: 700; color: var(--fg);
+                margin: 0 0 14px; padding-bottom: 8px;
+                border-bottom: 1px solid var(--border) }
+.section-title .count { color: var(--muted); font-weight: 500; font-size: 13px;
+                    margin-left: 6px; padding: 2px 8px;
+                    border: 1px solid var(--border); border-radius: 999px;
+                    vertical-align: 1px }
+.ref-list { list-style: none; padding: 0; margin: 0 }
+.ref-list li { padding: 10px 0; border-bottom: 1px solid var(--border);
+              display: flex; gap: 10px; align-items: flex-start }
+.ref-list li:last-child { border-bottom: 0 }
+.ref-badge { flex-shrink: 0; font-family: ui-monospace, monospace; font-size: 12px;
+             padding: 3px 8px; border-radius: 4px; font-weight: 600;
+             text-decoration: none; min-width: 80px; text-align: center }
+.ref-badge.wiki { background: var(--code-bg); color: var(--fg) }
+.ref-content { flex: 1; min-width: 0 }
+.ref-title { font-size: 14px; line-height: 1.35; margin: 0 0 4px; word-wrap: break-word }
+.ref-score { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace }
+.answer { white-space: pre-wrap; background: var(--code-bg); padding: 16px;
+          border-radius: 8px; font: 14px/1.55 ui-monospace, monospace;
+          border: 1px solid var(--border); margin: 0 }
+.empty { color: var(--muted); padding: 16px;
+          background: #f9fafb; border: 1px dashed var(--border);
+          border-radius: 6px; text-align: center; font-size: 13px }
+@media (max-width: 640px) {
+  form { grid-template-columns: 1fr; }
+  .ref-list li { flex-direction: column; gap: 6px }
+  .ref-badge { align-self: flex-start }
+}
+</style></head><body>
+<header>
+<h1>agentops-oss-helper</h1>
+<p class="tagline">Open Source Maintainer Helper Agent &mdash; paste a public
+GitHub repo URL. The tool retrieves that repo's own docs/README (via
+<code>git sparse-checkout</code>) and answers your question with citations.
+No login, no write-back to the target repo.</p>
+</header>
+{repo_header}
+<form method="post" action="/oss-helper">
+  <input type="text" name="repo_url" required autofocus
+         placeholder="https://github.com/<owner>/<repo>"
+         value="{repo_url_value}">
+  <input type="text" name="question"
+         placeholder="optional free-text question">
+  <button type="submit">Run</button>
+</form>
+''' + '{repo_url_value}' + '''
+</body></html>'''
+
+
+@app.get("/oss-helper", response_class=HTMLResponse)
+def oss_helper_form() -> HTMLResponse:
+    """Minimal HTML form. No Streamlit dependency -- works in any browser.
+    Proves the backend/frontend split: this whole flow is reachable
+    without streamlit installed (per ADR-0008 exit criterion 2)."""
+    return HTMLResponse(_format_oss_helper_html(""))
+
+
+@app.post("/oss-helper", response_class=HTMLResponse)
+async def oss_helper_run(
+    repo_url: str = Form(...),
+    question: str = Form(""),
+) -> HTMLResponse:
+    """Run the OSS Maintainer Helper flow and render an HTML report."""
+    try:
+        result = oss_helper.run_oss_helper(
+            repo_url=repo_url,
+            question=question.strip() or None,
+        )
+    except ValueError as exc:
+        body = _format_oss_helper_html(repo_url)
+        return HTMLResponse(
+            body + f'<p class="warn">{exc}</p></body></html>'
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("oss-helper run failed")
+        body = _format_oss_helper_html(repo_url)
+        return HTMLResponse(
+            body + f'<p class="warn">Internal error: {exc!r}</p></body></html>'
+        )
+    return HTMLResponse(_render_oss_helper_report(repo_url, result))
+
+
+def _title(label: str, count: int) -> str:
+    """Section title with a count badge."""
+    return (
+        f'<div class="section-title">{label}'
+        f'<span class="count">{count}</span></div>'
+    )
+
+
+def _render_ref(ref: dict) -> str:
+    """Render a single evidence ref link to its source."""
+    rid = _html.escape(str(ref.get("ref_id", "")))
+    title_text = _html.escape(str(ref.get("title", "")))
+    score = ref.get("score", 0)
+    return (
+        f'<li>'
+        f'<span class="ref-badge wiki">{rid}</span>'
+        f'<div class="ref-content">'
+        f'<div class="ref-title">{title_text}</div>'
+        f'<div class="ref-score">score: {score:.2f}</div>'
+        f'</div>'
+        f'</li>'
+    )
+
+
+def _render_refs(refs: list[dict]) -> str:
+    out = []
+    for r in refs:
+        out.append(_render_ref(r))
+    return "".join(out)
+
+
+def _render_refs_section(title: str, refs: list[dict]) -> str:
+    """Render one evidence section: header + list of clickable refs."""
+    empty = (
+        f'<div class="empty">No matching {title.lower()} found.</div>'
+    ) if not refs else ''
+    return (
+        f'<section class="section">'
+        f'{_title(title, len(refs))}'
+        + empty
+        + '<ul class="ref-list">' + "".join(_render_ref(r) for r in refs) + '</ul>'
+        + '</section>'
+    )
+
+
+def _render_oss_helper_report(repo_url: str, result: oss_helper.TriageResult) -> str:
+    """Render the TriageResult as HTML. Inline-only -- no client-side JS,
+    no external assets, no Streamlit dependency."""
+    warns = "".join(f'<p class="warn">{w}</p>' for w in result.warnings)
+    meta_row = (
+        f'<div class="meta-row">'
+        f'<span class="meta-chip">docs: <strong>{len(result.wiki_refs)}</strong></span>'
+        f'<span class="meta-chip">duration: <strong>{result.duration_ms}ms</strong></span>'
+        f'<span class="meta-chip">provider: <strong>{_html.escape(_provider_name())}</strong></span>'
+        f'</div>'
+    )
+    answer_section = (
+        '<section class="section">'
+        f'{_title("Answer", "")}'
+        f'<div class="answer">{_html.escape(result.answer)}</div>'
+        '</section>'
+    )
+    wiki_section = _render_refs_section(
+        "Docs evidence (from the repo's own README/docs)",
+        result.wiki_refs,
+    )
+
+    return (
+        _format_oss_helper_html(repo_url, repo_header="")
+        + warns
+        + meta_row
+        + answer_section
+        + wiki_section
+        + '</body></html>'
+    )
+
+
+def _provider_name() -> str:
+    """Best-effort read of the current provider setting for the status row.
+    Falls back to '?' if Settings isn't reachable (e.g. during a probe)."""
+    try:
+        from ..settings import get_settings
+        return get_settings().provider
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
+def _format_oss_helper_html(repo_url: str, *, repo_header: str = "") -> str:
+    """Substitute the per-request URL into the HTML template.
+
+    Uses str.replace (not str.format) because the template's CSS contains
+    brace literals that str.format would mis-parse as placeholders.
     """
-    with session_scope() as s:
-        action = s.get(Action, action_id)
-        if action is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="action not found")
-        run = s.get(Run, action.run_id)
-        if run is None or run.principal_id != principal_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="action not found")
-
-        if action.cancelled:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="action is cancelled")
-
-        expires_at = action.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        if now > expires_at:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="action has expired")
-
-        args = action.args_canonical or {}
-        title = args.get("title") or f"Ticket for run {action.run_id}"
-        body = args.get("body") or run.answer or run.task or f"Ticket for run {action.run_id}"
-
-        try:
-            ticket = get_ledger().publish(
-                action_key=action.id,
-                title=title,
-                body=body,
-                published_by=principal_id,
-                args=args,
-            )
-        except DuplicateArgsError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"action replay with mutated args: {exc}",
-            ) from exc
-
-        action.used_at = now
-        s.add(action)
-        return ExecuteResult(action_id=action.id, ticket_id=ticket.id, used_at=now.isoformat())
+    return _OSS_HELPER_HTML.replace(
+        "{repo_url_value}", _html.escape(repo_url or "")
+    ).replace(
+        "{repo_header}", repo_header or ""
+    )
 
 
-def make_test_client() -> TestClient:
-    return TestClient(app)
+# ---- helpers for tests ----
+
+
+def _bearer(principal: str = "alice") -> dict[str, str]:
+    tok = issue_token(principal)
+    return {"Authorization": f"Bearer {tok}"}
