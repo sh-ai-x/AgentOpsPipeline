@@ -5,33 +5,29 @@
 > artefacts under `apps/agentops-workbench/`. This file is the root index;
 > per-phase detail lives in `phases/<NN-slug>/index.md`.
 >
-> **Status: all seven phases were merged as surface, not as satisfied
-> acceptance criteria.** [`build-report.md`](build-report.md) is the
-> authoritative status — it found 2 of 7 cleanly met on first audit
-> (2026-09-11); PR #20/#21 (2026-09-13) closed the root-cause tool-dispatch
-> stub for the `planner_executor` topology, moving several steps from "fully
-> unmet" to "partial," but none has been re-verified as a clean **yes** yet,
-> and the held-out re-run is still pending. Read `build-report.md` before
-> trusting any phase-complete claim in this file. The workbench was imported
-> into this monorepo in PR #8 (`feat/agentops-workbench`); the live held-out
-> and 3-prompt experiment *numbers* below predate PR #20/#21 and have not
-> been refreshed. See
-> [`../apps/agentops-workbench/docs/EVIDENCE_CARD.md`](../apps/agentops-workbench/docs/EVIDENCE_CARD.md)
-> for the shipped summary.
+> **Status (refreshed 2026-09-15):** of the 7 Phase 0–6 acceptance criteria,
+> **4 cleanly met** (steps 1, 2, 3, 6) plus **step 4** that was always a
+> yes = **5 of 7 cleanly met**. Steps 5 (topology re-measurement) and 7
+> (held-out re-run) are partial — the code is in place; the live
+> `provider=minimax` re-runs that produce fresh numbers are pending.
+> Read [`build-report.md`](build-report.md) for the per-step verdicts.
 >
-> **Amended 2026-09-13.** "All seven phases implemented and merged" above
-> refers to Phases **0–6** and is left as written; read it with
-> [`build-report.md`](build-report.md), which finds only 2 of 7 acceptance
-> criteria cleanly met. A new **Phase 7** was added by the portfolio pivot
+> **Status (2026-09-13, historical):** all seven phases were merged as
+> surface, not as satisfied acceptance criteria. The first audit
+> (2026-09-11) found 2 of 7 cleanly met. PR #20/#21 closed the
+> root-cause tool-dispatch stub for `planner_executor`, moving
+> several steps from "fully unmet" to "partial."
+>
+> **Amended 2026-09-13.** A new **Phase 7** was added by the portfolio pivot
 > to open-source maintainer tooling (proposal §"Pivot (2026-09-13)",
 > [ADR-0007](../apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md)).
->
-> **Amended again, same day.** Phase 7 is **partially built**, not
-> "not started" — [PR #34](https://github.com/sh-ai-x/AgentOpsPipeline/pull/34)
+> [PR #34](https://github.com/sh-ai-x/AgentOpsPipeline/pull/34)
 > (merged) implements all five adapters, 223 tests passing; the
 > registry/config layer and Pillar 2's eval layer are the remaining gaps
 > (see [`07-adapter-pattern-pivot/index.md`](07-adapter-pattern-pivot/index.md)'s
-> reconciled deliverables list). A new **Phase 8** narrows the product
+> reconciled deliverables list).
+>
+> **Amended 2026-09-15.** A new **Phase 8** narrows the product
 > scope to one flagship GitHub-URL CLI flow and a real deployment target
 > (proposal §"Update 2 (2026-09-13)",
 > [ADR-0008](../apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md))
