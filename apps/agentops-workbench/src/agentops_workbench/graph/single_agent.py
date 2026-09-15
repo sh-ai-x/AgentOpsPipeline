@@ -268,9 +268,17 @@ def run_single_agent(
     *,
     max_steps: int = MAX_STEPS,
     document_client: DocumentClient | None = None,
+    corpus_dir: str = "fixtures/docs",
 ) -> SingleAgentOutput:
     """Single-agent loop. Stops on ANSWER/REFUSE/CLARIFY or budget exhaustion."""
-    client: DocumentClient = document_client or InMemoryDocumentClient()
+    if document_client is None:
+        if corpus_dir and corpus_dir != "fixtures/docs":
+            from ..adapters.wiki_rag import WikiRagAdapter
+
+            document_client = WikiRagAdapter(corpus_dir)
+        else:
+            document_client = InMemoryDocumentClient()
+    client: DocumentClient = document_client
     initial: _SingleAgentState = {
         "adapter": adapter,
         "document_client": client,

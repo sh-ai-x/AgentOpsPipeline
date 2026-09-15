@@ -245,9 +245,13 @@ def _execute_run(run_id: str) -> None:
                     run.error = f"unknown graph_version: {graph_version!r}"
             return
 
+        # When wiki_dir is set, the agent reads from that directory
+        # instead of the fixture docs. Both are directories of *.md;
+        # wiki_dir wins when set, docs_dir is the fallback default.
+        corpus_dir = settings.wiki_dir or settings.docs_dir
         # execute graph (synchronous; bounded by each topology's own step budget)
         try:
-            result = run_topology(topology_name, adapter, task)
+            result = run_topology(topology_name, adapter, task, corpus_dir=corpus_dir)
         except Exception as exc:  # pragma: no cover - exercised via test_failure
             log.exception("graph execution failed")
             with session_scope() as s:

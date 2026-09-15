@@ -10,13 +10,13 @@ from .planner_executor import PlannerExecutorOutput, run_planner_executor
 from .single_agent import SingleAgentOutput, run_single_agent
 
 
-def fixed(adapter: LLMAdapter, task: str) -> dict[str, Any]:
-    out: GraphOutput = run_fixed_graph(adapter, task)
+def fixed(adapter: LLMAdapter, task: str, *, corpus_dir: str = "fixtures/docs") -> dict[str, Any]:
+    out: GraphOutput = run_fixed_graph(adapter, task, docs_dir=corpus_dir)
     return {"state": out.state, "answer": out.answer, "route": out.route, "tool_results": []}
 
 
-def single_agent(adapter: LLMAdapter, task: str) -> dict[str, Any]:
-    out: SingleAgentOutput = run_single_agent(adapter, task)
+def single_agent(adapter: LLMAdapter, task: str, *, corpus_dir: str = "fixtures/docs") -> dict[str, Any]:
+    out: SingleAgentOutput = run_single_agent(adapter, task, corpus_dir=corpus_dir)
     return {
         "state": out.state,
         "answer": out.answer,
@@ -25,8 +25,8 @@ def single_agent(adapter: LLMAdapter, task: str) -> dict[str, Any]:
     }
 
 
-def planner_executor(adapter: LLMAdapter, task: str) -> dict[str, Any]:
-    out: PlannerExecutorOutput = run_planner_executor(adapter, task)
+def planner_executor(adapter: LLMAdapter, task: str, *, corpus_dir: str = "fixtures/docs") -> dict[str, Any]:
+    out: PlannerExecutorOutput = run_planner_executor(adapter, task, corpus_dir=corpus_dir)
     return {
         "state": out.state,
         "answer": out.answer,
@@ -36,13 +36,19 @@ def planner_executor(adapter: LLMAdapter, task: str) -> dict[str, Any]:
     }
 
 
-TOPOLOGIES: dict[str, Callable[[LLMAdapter, str], dict[str, Any]]] = {
+TOPOLOGIES: dict[str, Callable[..., dict[str, Any]]] = {
     "fixed": fixed,
     "single_agent": single_agent,
     "planner_executor": planner_executor,
 }
 
 
-def run_topology(name: str, adapter: LLMAdapter, task: str) -> dict[str, Any]:
+def run_topology(
+    name: str,
+    adapter: LLMAdapter,
+    task: str,
+    *,
+    corpus_dir: str = "fixtures/docs",
+) -> dict[str, Any]:
     fn = TOPOLOGIES[name]
-    return fn(adapter, task)
+    return fn(adapter, task, corpus_dir=corpus_dir)

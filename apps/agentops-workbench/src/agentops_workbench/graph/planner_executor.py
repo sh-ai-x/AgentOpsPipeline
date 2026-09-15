@@ -257,8 +257,22 @@ def run_planner_executor(
     task: str,
     *,
     document_client: DocumentClient | None = None,
+    corpus_dir: str = "fixtures/docs",
 ) -> PlannerExecutorOutput:
-    client: DocumentClient = document_client or InMemoryDocumentClient()
+    if document_client is None:
+        # WikiRagAdapter (TF-IDF over a directory of *.md) is the
+        # proposal-correct wiki evidence source. The compat shims
+        # (`search_docs` / `read_document`) let it drop in for the legacy
+        # `DocumentClient` without changing the planner_executor graph.
+        # Falls back to InMemoryDocumentClient(fixtures/docs) when corpus_dir
+        # matches the default.
+        if corpus_dir and corpus_dir != "fixtures/docs":
+            from ..adapters.wiki_rag import WikiRagAdapter
+
+            document_client = WikiRagAdapter(corpus_dir)
+        else:
+            document_client = InMemoryDocumentClient()
+    client: DocumentClient = document_client
     initial: _PlannerExecutorState = {
         "adapter": adapter,
         "document_client": client,

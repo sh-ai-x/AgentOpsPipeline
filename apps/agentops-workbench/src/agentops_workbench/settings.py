@@ -37,8 +37,13 @@ class Settings(BaseSettings):
     # DB
     database_url: str = "sqlite:///./agentops.db"
 
-    # Document corpus (MCP document server + lexical retrieval)
+    # Document corpus (MCP document server + lexical retrieval).
+    # Set wiki_dir to point the agent at any directory of *.md files
+    # (e.g. an exported personal wiki); falls back to docs_dir when empty.
+    # Uses WikiRagAdapter (TF-IDF over *.md) for the planner topology and
+    # the same lexical scan as docs_dir for the fixed topology.
     docs_dir: str = "fixtures/docs"
+    wiki_dir: str = ""
 
     # Trace export (OTel spans per run)
     runs_dir: str = "./runs"
