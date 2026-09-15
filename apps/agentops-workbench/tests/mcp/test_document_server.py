@@ -216,6 +216,26 @@ def test_duplicate_publish_is_idempotent() -> None:
         led.publish(action_key="k1", title="t", body="b", published_by="alice", args={"x": 2})
 
 
+def test_default_corpus_dir_resolves_to_real_nonempty_fixtures(corpus_dir: str) -> None:
+    """main_stdio()'s bare invocation (no corpus_dir arg -- the real
+    subprocess-launch path, `python -m ....document.server` with no args)
+    must resolve to the real fixtures/docs/, not a stray sibling directory
+    that happens to exist but is empty. Previously this was one .parent
+    hop short and silently loaded an empty corpus."""
+    from pathlib import Path
+
+    from agentops_workbench.mcp.mcp_servers.document.server import (
+        _default_corpus_dir,
+        _load_corpus,
+    )
+
+    resolved = _default_corpus_dir()
+    assert Path(resolved).resolve() == Path(corpus_dir).resolve()
+    assert Path(resolved).is_dir()
+    corpus = _load_corpus(resolved)
+    assert corpus  # non-empty -- this is exactly what silently broke before
+
+
 def test_client_reinit_after_simulated_disconnect(corpus_dir: str) -> None:
     """Simulate a transport disconnect by raising; classify; reconnect."""
     c1 = InMemoryDocumentClient(docs_dir=corpus_dir)
