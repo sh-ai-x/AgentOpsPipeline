@@ -37,14 +37,44 @@ class Settings(BaseSettings):
     # DB
     database_url: str = "sqlite:///./agentops.db"
 
-    # Document corpus (MCP document server + lexical retrieval)
+    # Document corpus (MCP document server + lexical retrieval).
+    # Set wiki_dir to point the agent at any directory of *.md files
+    # (e.g. an exported personal wiki); falls back to docs_dir when empty.
+    # Uses WikiRagAdapter (TF-IDF over *.md) for the planner topology and
+    # the same lexical scan as docs_dir for the fixed topology.
+    #
+    # Multi-tenant caveat (Major 6 in PR #39 review, marked PLAUSIBLE):
+    # wiki_dir is read from process-global settings, NOT per principal_id.
+    # In a multi-tenant deployment every authenticated principal reads the
+    # same wiki tree. Either scope by principal_id (deferred — needs an
+    # auth-aware corpus resolution path) or document this caveat to the
+    # operator. This docstring is the documentation half; scoping is a
+    # separate ADR-level decision.
     docs_dir: str = "fixtures/docs"
+    wiki_dir: str = ""
 
     # Trace export (OTel spans per run)
     runs_dir: str = "./runs"
 
     # Auth: principal for local dev
     dev_principal_id: str = "dev-user"
+
+    def resolved_corpus(self, override: str | None = None) -> tuple[str, bool]:
+        """Resolve the (corpus_dir, wiki_mode) tuple for a single run.
+
+        `override` is the per-run `corpus_dir` field on `CreateRunBody`;
+        when set, it takes precedence over both env-derived fields.
+        `wiki_mode` is True only when the resolved corpus was explicitly
+        marked as a wiki directory (i.e. `wiki_dir` was set AND no per-run
+        override replaced it). The planner/single_agent topologies use
+        WikiRagAdapter only when wiki_mode is True; the fixed topology
+        uses `_retrieve_docs` regardless.
+        """
+        if override:
+            return (override, False)
+        if self.wiki_dir:
+            return (self.wiki_dir, True)
+        return (self.docs_dir, False)
 
     @model_validator(mode="after")
     def _guard_jwt_algorithm(self) -> Settings:
@@ -74,3 +104,11 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+
+# Single source of truth for the default corpus directory. Imported
+# wherever the literal would otherwise be duplicated; renaming the
+# default now requires a single edit. Mirrors `Settings.docs_dir`'s
+# default value, intentionally module-level so non-Settings callers
+# (graph/topology.py etc.) don't need a Settings instance to get it.
+DEFAULT_CORPUS_DIR = "fixtures/docs"

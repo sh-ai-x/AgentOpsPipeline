@@ -32,7 +32,14 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from ..llm.adapter import LLMAdapter
-from ..mcp import DocRef, DocumentClient, InMemoryDocumentClient, MCPError, classify_mcp_error
+from ..mcp import (
+    DocRef,
+    DocumentClient,
+    MCPError,
+    build_document_client,
+    classify_mcp_error,
+)
+from ..settings import DEFAULT_CORPUS_DIR
 from .fixed import (
     _CLARIFY_MESSAGE,
     _REFUSE_MESSAGE,
@@ -268,9 +275,12 @@ def run_single_agent(
     *,
     max_steps: int = MAX_STEPS,
     document_client: DocumentClient | None = None,
+    corpus_dir: str = DEFAULT_CORPUS_DIR,
+    wiki_mode: bool = False,
 ) -> SingleAgentOutput:
     """Single-agent loop. Stops on ANSWER/REFUSE/CLARIFY or budget exhaustion."""
-    client: DocumentClient = document_client or InMemoryDocumentClient()
+    client = build_document_client(corpus_dir, wiki_mode, document_client)
+    assert client is not None, "build_document_client must return a non-None client"
     initial: _SingleAgentState = {
         "adapter": adapter,
         "document_client": client,

@@ -75,6 +75,11 @@ class CreateRunBody(BaseModel):
     prompt_version: str = "v1_baseline"
     model_config: dict[str, Any] = {}
     budget: dict[str, Any] = {}
+    # Per-run corpus override. When set, takes precedence over both
+    # wiki_dir and docs_dir; wiki_mode stays False (treated as a plain
+    # docs_dir override, not a wiki). Empty string means "use server
+    # default" (= wiki_dir if set, else docs_dir).
+    corpus_dir: str = ""
 
 
 # Maps the API-facing graph_version string to a topology.TOPOLOGIES key.
@@ -184,7 +189,7 @@ def create_run(body: CreateRunBody, principal_id: str = Depends(require_principa
         s.flush()
 
     # Synchronous execution for MVP (Step 5 moves this to a job runner)
-    _execute_run(run_id)
+    _execute_run(run_id, corpus_dir_override=body.corpus_dir or None)
     return get_run(run_id, principal_id)
 
 
@@ -229,7 +234,7 @@ def _persist_tool_calls(session, run_id: str, tool_results: list[dict[str, Any]]
         )
 
 
-def _execute_run(run_id: str) -> None:
+def _execute_run(run_id: str, *, corpus_dir_override: str | None = None) -> None:
     settings = get_settings()
     adapter = make_adapter(settings)
     try:
@@ -250,9 +255,20 @@ def _execute_run(run_id: str) -> None:
                     run.error = f"unknown graph_version: {graph_version!r}"
             return
 
+        # When wiki_dir is set, the agent reads from that directory
+        # instead of the fixture docs. `corpus_dir_override` (passed by
+        # create_run from the per-run `corpus_dir` body field) wins over
+        # both env-derived fields. `wiki_mode` is True only when wiki_dir
+        # was the resolver's source — a per-run override forces
+        # wiki_mode=False so the operator gets the original
+        # InMemoryDocumentClient (substring scan), not a silent
+        # retrieval-algorithm swap.
+        corpus_dir, wiki_mode = settings.resolved_corpus(override=corpus_dir_override)
         # execute graph (synchronous; bounded by each topology's own step budget)
         try:
-            result = run_topology(topology_name, adapter, task)
+            result = run_topology(
+                topology_name, adapter, task, corpus_dir=corpus_dir, wiki_mode=wiki_mode
+            )
         except Exception as exc:  # pragma: no cover - exercised via test_failure
             log.exception("graph execution failed")
             with session_scope() as s:
