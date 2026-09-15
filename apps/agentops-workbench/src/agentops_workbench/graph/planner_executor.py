@@ -83,14 +83,21 @@ def _parse_plan(text: str) -> list[str]:
 
 def _resolve_read_doc_id(
     task: str, last_search_results: list[DocRef], client: DocumentClient
-) -> str | None:
+) -> tuple[str | None, list[DocRef]]:
     """doc_id to read: the top-ranked prior search_docs hit, or -- when the
     plan never ran search_docs -- a fresh search over the task text itself.
+
+    Returns (doc_id, updated last_search_results) so a fallback search's
+    hits get cached the same way a real search_docs step's would --
+    otherwise a plan with two read_document steps and no search_docs step
+    would re-run the identical fallback search twice.
     """
     if last_search_results:
-        return last_search_results[0].doc_id
+        return last_search_results[0].doc_id, last_search_results
     fallback = client.search_docs(task, top_k=1)
-    return fallback[0].doc_id if fallback else None
+    if fallback:
+        return fallback[0].doc_id, fallback
+    return None, last_search_results
 
 
 def _execute_step(
@@ -99,22 +106,31 @@ def _execute_step(
     client: DocumentClient,
     last_search_results: list[DocRef],
     context_docs: list[tuple[str, str]],
-) -> tuple[str, str | None, list[DocRef]]:
+) -> tuple[str, str | None, list[DocRef], dict[str, Any]]:
     """Run one plan step against the real DocumentClient.
 
-    Returns (outcome, error_kind, updated last_search_results). Mutates
-    context_docs in place with any retrieved text so the caller can fold
-    it into the final synthesis prompt. Never raises -- every failure is
-    normalised via classify_mcp_error and reported through the return
-    value so the plan can continue.
+    Returns (outcome, error_kind, updated last_search_results, args_used).
+    `args_used` is the real argument the tool was actually invoked with
+    (`{"query": task}` for search_docs, `{"doc_id": doc_id}` for
+    read_document, `{}` otherwise) -- callers persist this as the real
+    ToolCall args instead of a fabricated placeholder, so the crash-recovery
+    idempotency invariant (graph/state.py:make_action_key) is keyed on what
+    actually happened, not on step position. Mutates context_docs in place
+    with any retrieved text so the caller can fold it into the final
+    synthesis prompt. Never raises -- every failure is normalised via
+    classify_mcp_error and reported through the return value so the plan
+    can continue.
     """
+    args: dict[str, Any] = {}
     try:
         if tool == "search_docs":
+            args = {"query": task}
             last_search_results = client.search_docs(task)
         elif tool == "read_document":
-            doc_id = _resolve_read_doc_id(task, last_search_results, client)
+            doc_id, last_search_results = _resolve_read_doc_id(task, last_search_results, client)
             if doc_id is None:
                 raise ValueError("read_document: no candidate doc_id (search returned no hits)")
+            args = {"doc_id": doc_id}
             text = client.read_document(doc_id)
             context_docs.append((doc_id, text[:_CONTEXT_SNIPPET_CHARS]))
         elif tool == "get_issue":
@@ -131,8 +147,8 @@ def _execute_step(
     except Exception as exc:  # noqa: BLE001 - normalised via classify_mcp_error
         mcp_err = exc if isinstance(exc, MCPError) else classify_mcp_error(exc)
         log.info("planner_executor: tool=%s failed kind=%s", tool, mcp_err.kind)
-        return "error", mcp_err.kind, last_search_results
-    return "ok", None, last_search_results
+        return "error", mcp_err.kind, last_search_results, args
+    return "ok", None, last_search_results, args
 
 
 class _PlannerExecutorState(TypedDict, total=False):
@@ -177,7 +193,7 @@ def _execute_node(state: _PlannerExecutorState) -> dict[str, Any]:
     tool_results = list(state.get("tool_results", []))
 
     start = time.monotonic()
-    outcome, error_kind, last_search_results = _execute_step(
+    outcome, error_kind, last_search_results, args = _execute_step(
         tool, task, client, last_search_results, context_docs
     )
     latency_ms = int((time.monotonic() - start) * 1000)
@@ -187,6 +203,7 @@ def _execute_node(state: _PlannerExecutorState) -> dict[str, Any]:
             "outcome": outcome,
             "latency_ms": latency_ms,
             "error_kind": error_kind,
+            "args": args,
         }
     )
     return {
@@ -198,14 +215,25 @@ def _execute_node(state: _PlannerExecutorState) -> dict[str, Any]:
 
 
 def _synthesize_node(state: _PlannerExecutorState) -> dict[str, Any]:
+    """Fold everything retrieved so far into the final prompt.
+
+    `context_docs` (populated only by read_document) takes priority since
+    it carries real passage text. A plan consisting of search_docs alone --
+    a plausible single-step plan -- never touches context_docs, so without
+    this fallback its hits would be silently discarded and the answer
+    synthesized ungrounded despite search_docs having found real matches.
+    """
     adapter = state["adapter"]
     task = state["task"]
     context_docs = state.get("context_docs", [])
-    docs_blob = (
-        "\n\n--\n\n".join(f"[{doc_id}]: {snippet}" for doc_id, snippet in context_docs)
-        if context_docs
-        else "(no relevant docs found)"
-    )
+    last_search_results = state.get("last_search_results", [])
+    if context_docs:
+        docs_blob = "\n\n--\n\n".join(f"[{doc_id}]: {snippet}" for doc_id, snippet in context_docs)
+    elif last_search_results:
+        ids = ", ".join(r.doc_id for r in last_search_results)
+        docs_blob = f"(search_docs found candidate documents but none were read in full: {ids})"
+    else:
+        docs_blob = "(no relevant docs found)"
     synth_resp = adapter.chat(
         [{"role": "user", "content": _SYNTH_PROMPT.format(docs=docs_blob, task=task)}]
     )
