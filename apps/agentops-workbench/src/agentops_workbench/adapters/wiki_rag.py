@@ -34,6 +34,15 @@ from .base import EvidenceRef
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
+# Maximum number of .md files WikiRagAdapter will index per corpus.
+# Beyond this, the in-process TF-IDF index grows quadratically in
+# vocabulary and would exhaust the FastAPI worker RSS. The cap
+# matches `oss-helper`'s `--max-docs` default (4096). Above the cap,
+# construction raises so the operator gets a loud failure instead of
+# silent OOM. Override with the env var `AGENTOPS_WIKI_MAX_DOCS` (or
+# the matching setting) when a larger corpus is genuinely warranted.
+MAX_WIKI_DOCS = 4096
+
 
 def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
@@ -44,7 +53,20 @@ def _now_iso() -> str:
 
 
 class WikiRagAdapter:
-    """Real TF-IDF + cosine-similarity retrieval over `wiki_dir`/*.md."""
+    """Real TF-IDF + cosine-similarity retrieval over `wiki_dir`/*.md.
+
+    Raises `MCPError(kind="unsupported_capability")` at construction if
+    `wiki_dir` contains more than `MAX_WIKI_DOCS` markdown files — the
+    in-process TF-IDF index is O(N * V) in vocabulary size and would
+    exhaust the FastAPI worker RSS above that. See
+    `oss-helper`'s `--max-docs` flag for the operator-facing surface.
+
+    The adapter caches itself per `wiki_dir` via the module-level
+    `get_wiki_rag_adapter(wiki_dir)` factory below. Multiple
+    `run_planner_executor` / `run_single_agent` calls against the same
+    wiki_dir share one TF-IDF index build instead of re-paying the cost
+    per request.
+    """
 
     source_kind = "wiki"
 
@@ -53,6 +75,15 @@ class WikiRagAdapter:
         self._files: dict[str, Path] = {
             f.stem: f for f in sorted(Path(wiki_dir).glob("*.md"))
         }
+        if len(self._files) > MAX_WIKI_DOCS:
+            raise MCPError(
+                "unsupported_capability",
+                f"wiki_dir {wiki_dir!r} contains {len(self._files)} markdown "
+                f"files; WikiRagAdapter caps at MAX_WIKI_DOCS={MAX_WIKI_DOCS} "
+                f"to keep the in-process TF-IDF index bounded. Narrow the "
+                f"corpus or raise MAX_WIKI_DOCS at your own risk.",
+                source="wiki_rag",
+            )
         self._doc_term_counts: dict[str, Counter[str]] = {}
         self._doc_norms: dict[str, float] = {}
         self._df: Counter[str] = Counter()
@@ -147,3 +178,31 @@ class WikiRagAdapter:
             raise MCPError("unknown", f"wiki page not found: {ref_id}", source="wiki_rag")
         text = path.read_text(encoding="utf-8", errors="replace")
         return text[offset : offset + limit]
+
+
+# Module-level cache keyed by `wiki_dir`. Multiple `run_planner_executor`
+# calls against the same wiki share one TF-IDF index build instead of
+# re-paying the O(N*V) construction cost per request. Cleared explicitly
+# by `clear_wiki_rag_cache()` when tests need a fresh build.
+_WIKI_RAG_CACHE: dict[str, WikiRagAdapter] = {}
+
+
+def get_wiki_rag_adapter(wiki_dir: str) -> WikiRagAdapter:
+    """Return the cached WikiRagAdapter for `wiki_dir`, building on miss.
+
+    Construction enforces the `MAX_WIKI_DOCS` cap (raises MCPError on
+    overflow). The cache is process-local and never invalidated
+    automatically; callers that mutate the wiki directory must invoke
+    `clear_wiki_rag_cache()` to force a rebuild.
+    """
+    cached = _WIKI_RAG_CACHE.get(wiki_dir)
+    if cached is not None:
+        return cached
+    adapter = WikiRagAdapter(wiki_dir)
+    _WIKI_RAG_CACHE[wiki_dir] = adapter
+    return adapter
+
+
+def clear_wiki_rag_cache() -> None:
+    """Drop all cached WikiRagAdapter instances. Used by tests."""
+    _WIKI_RAG_CACHE.clear()

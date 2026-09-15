@@ -79,7 +79,9 @@ def build_document_client(
     Returns the explicit `document_client` when one is injected
     (test/CI overrides). Otherwise:
 
-    - `wiki_mode=True`  → `WikiRagAdapter(corpus_dir)` (TF-IDF over *.md)
+    - `wiki_mode=True`  → `WikiRagAdapter(corpus_dir)` (TF-IDF over *.md,
+      cached per `corpus_dir` so multiple runs against the same wiki share
+      one TF-IDF index build).
     - `wiki_mode=False` → `InMemoryDocumentClient()` (substring scan)
 
     The wiki_mode discriminator prevents an operator who only overrode
@@ -91,9 +93,9 @@ def build_document_client(
     if document_client is not None:
         return document_client
     if wiki_mode:
-        from ..adapters.wiki_rag import WikiRagAdapter
+        from ..adapters.wiki_rag import get_wiki_rag_adapter
 
-        return WikiRagAdapter(corpus_dir)
+        return get_wiki_rag_adapter(corpus_dir)
     return InMemoryDocumentClient()
 
 
