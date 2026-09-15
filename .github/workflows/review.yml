@@ -462,9 +462,19 @@ jobs:
     # Reads verdict directly from the review job's output. Passes when
     # review verdict is Approve; fails on Changes Requested / Blocked /
     # empty / non-Approve verdicts.
+    #
+    # `if: always() || failure()` on the JOB (not just the step) is
+    # required so the gate evaluates the recovered verdict even when
+    # the upstream `review` job exits non-zero -- e.g. when the MiniMax
+    # provider drops the assistant stream and the file parser falls back
+    # to the PR-comments fallback that recovers verdict=Approve. With the
+    # default `if: success()` on `needs`, the gate would SKIP and the
+    # human operator would have to override on every transient stream
+    # drop. With this fix, the recovered Approve verdict gates the merge.
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.pull_request.head.repo.full_name == github.repository) &&
+      (always() || failure())
     name: severity gate (review only)
     runs-on: ubuntu-latest
     needs: [review]
