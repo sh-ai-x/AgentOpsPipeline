@@ -19,15 +19,20 @@
 > what actually runs today.
 >
 > The product scope has since narrowed to one flagship flow —
-> `agentops-oss-helper <github-repo-url>`, wiring two of the five adapters
-> (Wiki + GitHub Issues) into a new `oss_triage` topology — plus a real
-> deployment target (Fly.io, SQLite on a volume) and a backend/frontend
-> split verifiable without Streamlit
-> ([ADR-0008](docs/adr/0008-github-url-cli-and-deployment-target.md)).
-> **That flow and the deployment are still planning-only, no code.** Full
-> design:
-> [`../../docs/proposals/agentops-workbench-proposal.md`](../../docs/proposals/agentops-workbench-proposal.md)
-> §"Pivot (2026-09-13)" and §"Update 2 (2026-09-13)".
+> `agentops-oss-helper <github-repo-url>` — wired with just the **Wiki**
+> half of the Adapter pattern. The original two-source design (Wiki +
+> GitHub Issues) was reduced to docs-only on 2026-09-15 because anonymous
+> GitHub API access to `/search/issues` is rate-limited to 60 req/h per
+> IP and refuses with `422` on popular or large repos — making the demo
+> fail on the very targets it was meant to demonstrate. See
+> [ADR-0009](docs/adr/0009-oss-helper-docs-only-scope.md) for the full
+> decision record. **Token-free setup** remains a hard requirement for
+> the flagship demo.
+>
+> The remaining phase 8 scope (Fly.io deployment, backend/frontend
+> split verifiable without Streamlit, the five operational fixes
+> listed below) is unchanged — see the linked proposal and ADRs for
+> detail.
 
 A support-operations agent that turns a software issue into a grounded
 answer and an approval-gated ticket draft, plus an experiment workbench
@@ -83,6 +88,14 @@ download required).
 | Off-topic query ("How do I bake sourdough bread?") — server-side refusal path with `_REFUSE_MESSAGE` | ![Streamlit unrelated query](docs/screenshots/04_unrelated_query.png) |
 | `/_debug/retrieve?task=...` JSON output — web-debug surface to inspect what the agent would surface BEFORE running a full `/v1/runs` cycle | ![Debug endpoint](docs/screenshots/05_debug_endpoint.png) |
 | `/_debug/metrics` JSON — live, recomputed on every request. Reports test count, DB ledger (runs / tool_calls / actions), screenshot bytes, diff-vs-main, and cost. Two caveats surface why `cost_usd` and `tool_calls` are 0 for the current default graph | ![Debug metrics](docs/screenshots/06_metrics_endpoint.png) |
+
+> **Demo scope (2026-09-15):** the `oss-helper` web form is docs-only.
+> Paste a public GitHub repo URL → the tool bulk-acquires the repo's
+> own docs/README → asks the LLM your question grounded in those docs
+> with citations. No GitHub token required for this flow on small to
+> medium public repos. See
+> [ADR-0009](docs/adr/0009-oss-helper-docs-only-scope.md) for the full
+> scope-reduction decision record.
 
 To regenerate after a UI change:
 
