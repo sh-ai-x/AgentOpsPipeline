@@ -258,7 +258,7 @@ jobs:
             | grep -E '^\.github/workflows/.+\.ya?ml$' || true)
           hist_files=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[].files[].path' 2>/dev/null \
             | grep -E '^\.github/workflows/.+\.ya?ml$' | sort -u || true)
-          workflow_files=$(printf '%s\n%s\n' "$diff_files" "$hist_files" | grep -v '^$' | sort -u || true)
+          workflow_files=$(printf '%s\n%s\n' "$diff_files" "$hist_files" | grep -v '^$' | sort -u)
           if [ -n "$workflow_files" ]; then
             listed=$(echo "$workflow_files" | paste -sd, -)
             echo "::notice::PR modifies workflow files (${listed}); claude-code-action will skip."
