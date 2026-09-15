@@ -29,7 +29,7 @@ general-purpose agent framework. LangGraph from the first release, LangChain
 integrations, an MCP document server and a pinned filesystem server.
 
 - **Scope of record:** [`docs/proposals/agentops-workbench-proposal.md`](docs/proposals/agentops-workbench-proposal.md)
-- **Application:** [`apps/agentops-workbench/`](apps/agentops-workbench/) — `src/`, `fixtures/`, `experiments/`, `docker/`, 154 tests (imported in PR #8)
+- **Application:** [`apps/agentops-workbench/`](apps/agentops-workbench/) — `src/`, `fixtures/`, `experiments/`, `docker/`, test count tracked in [`apps/agentops-workbench/docs/EVIDENCE_CARD.md`](apps/agentops-workbench/docs/EVIDENCE_CARD.md)
 - **Phase index + build audit:** [`phases/index.md`](phases/index.md), [`phases/build-report.md`](phases/build-report.md)
 - **ADR catalogue:** [`docs/adr/README.md`](docs/adr/README.md)
 
