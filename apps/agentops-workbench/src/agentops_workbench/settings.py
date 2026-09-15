@@ -51,6 +51,23 @@ class Settings(BaseSettings):
     # Auth: principal for local dev
     dev_principal_id: str = "dev-user"
 
+    def resolved_corpus(self, override: str | None = None) -> tuple[str, bool]:
+        """Resolve the (corpus_dir, wiki_mode) tuple for a single run.
+
+        `override` is the per-run `corpus_dir` field on `CreateRunBody`;
+        when set, it takes precedence over both env-derived fields.
+        `wiki_mode` is True only when the resolved corpus was explicitly
+        marked as a wiki directory (i.e. `wiki_dir` was set AND no per-run
+        override replaced it). The planner/single_agent topologies use
+        WikiRagAdapter only when wiki_mode is True; the fixed topology
+        uses `_retrieve_docs` regardless.
+        """
+        if override:
+            return (override, False)
+        if self.wiki_dir:
+            return (self.wiki_dir, True)
+        return (self.docs_dir, False)
+
     @model_validator(mode="after")
     def _guard_jwt_algorithm(self) -> Settings:
         """Reject alg=none / unknown JWT algorithms (token-forgery guard)."""
@@ -79,3 +96,11 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+
+# Single source of truth for the default corpus directory. Imported
+# wherever the literal would otherwise be duplicated; renaming the
+# default now requires a single edit. Mirrors `Settings.docs_dir`'s
+# default value, intentionally module-level so non-Settings callers
+# (graph/topology.py etc.) don't need a Settings instance to get it.
+DEFAULT_CORPUS_DIR = "fixtures/docs"

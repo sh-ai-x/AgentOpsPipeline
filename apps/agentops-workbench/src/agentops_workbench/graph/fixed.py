@@ -17,6 +17,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from ..llm.adapter import LLMAdapter
+from ..settings import DEFAULT_CORPUS_DIR
 from .state import RunState
 
 log = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ _CLASSIFY_PROMPT = (
 )
 
 
-def _classify(adapter: LLMAdapter, task: str, docs_dir: str = "fixtures/docs") -> str:
+def _classify(adapter: LLMAdapter, task: str, docs_dir: str = DEFAULT_CORPUS_DIR) -> str:
     """Return one of: answer, refuse, clarify.
 
     Deterministic by construction: the LLM is non-deterministic at
@@ -76,7 +77,7 @@ _STOPWORDS = frozenset({
 })
 
 
-def _retrieve_docs(task: str, docs_dir: str = "fixtures/docs") -> str:
+def _retrieve_docs(task: str, docs_dir: str = DEFAULT_CORPUS_DIR) -> str:
     """Lexical retrieval over the fixture corpus.
 
     Top-3 docs that match task tokens. Tokenization strips punctuation
@@ -136,7 +137,7 @@ class _FixedGraphState(TypedDict, total=False):
 
 
 def _classify_node(state: _FixedGraphState) -> dict[str, Any]:
-    route = _classify(state["adapter"], state["task"], state.get("docs_dir", "fixtures/docs"))
+    route = _classify(state["adapter"], state["task"], state.get("docs_dir", DEFAULT_CORPUS_DIR))
     log.info("fixed_graph: route=%s", route)
     return {"route": route}
 
@@ -162,7 +163,7 @@ def _clarify_node(state: _FixedGraphState) -> dict[str, Any]:
 def _answer_node(state: _FixedGraphState) -> dict[str, Any]:
     task = state["task"]
     adapter = state["adapter"]
-    retrieved = _retrieve_docs(task, state.get("docs_dir", "fixtures/docs"))
+    retrieved = _retrieve_docs(task, state.get("docs_dir", DEFAULT_CORPUS_DIR))
     prompt = _ANSWER_PROMPT.format(docs=retrieved, task=task)
     resp = adapter.chat([{"role": "user", "content": prompt}])
     content = (resp.content or "").strip()
@@ -217,7 +218,11 @@ _GRAPH = _build_graph()
 
 
 def run_fixed_graph(
-    adapter: LLMAdapter, task: str, *, evidence: str = "", docs_dir: str = "fixtures/docs"
+    adapter: LLMAdapter,
+    task: str,
+    *,
+    evidence: str = "",
+    docs_dir: str = DEFAULT_CORPUS_DIR,
 ) -> GraphOutput:
     """Execute the fixed graph. Deterministic classify + answer."""
     log.info("fixed_graph: classify task len=%d corpus=%s", len(task), docs_dir)

@@ -31,6 +31,7 @@ from langgraph.graph import END, StateGraph
 
 from ..llm.adapter import LLMAdapter
 from ..mcp import DocRef, DocumentClient, InMemoryDocumentClient, MCPError, classify_mcp_error
+from ..settings import DEFAULT_CORPUS_DIR
 from .fixed import _CLARIFY_MESSAGE, _REFUSE_MESSAGE
 from .state import RunState
 
@@ -257,16 +258,22 @@ def run_planner_executor(
     task: str,
     *,
     document_client: DocumentClient | None = None,
-    corpus_dir: str = "fixtures/docs",
+    corpus_dir: str = DEFAULT_CORPUS_DIR,
+    wiki_mode: bool = False,
 ) -> PlannerExecutorOutput:
     if document_client is None:
         # WikiRagAdapter (TF-IDF over a directory of *.md) is the
         # proposal-correct wiki evidence source. The compat shims
         # (`search_docs` / `read_document`) let it drop in for the legacy
         # `DocumentClient` without changing the planner_executor graph.
-        # Falls back to InMemoryDocumentClient(fixtures/docs) when corpus_dir
-        # matches the default.
-        if corpus_dir and corpus_dir != "fixtures/docs":
+        #
+        # wiki_mode is the explicit opt-in: it's True only when the
+        # caller (server.py) resolved wiki_dir as the corpus source.
+        # An operator who only overrode docs_dir keeps wiki_mode=False
+        # and gets the original InMemoryDocumentClient (substring scan),
+        # avoiding the silent retrieval-algorithm swap that the PR-review
+        # flagged as Major 1.
+        if wiki_mode:
             from ..adapters.wiki_rag import WikiRagAdapter
 
             document_client = WikiRagAdapter(corpus_dir)
