@@ -27,30 +27,24 @@ from agentops_workbench.oss_helper import (
 
 
 def test_parse_repo_url_accepts_canonical_form() -> None:
-    owner, repo, issue = parse_repo_url("https://github.com/owner/repo")
+    owner, repo = parse_repo_url("https://github.com/owner/repo")
     assert owner == "owner"
     assert repo == "repo"
-    assert issue is None
 
 
 def test_parse_repo_url_accepts_trailing_slash() -> None:
-    o, r, i = parse_repo_url("https://github.com/owner/repo/")
-    assert (o, r, i) == ("owner", "repo", None)
+    o, r = parse_repo_url("https://github.com/owner/repo/")
+    assert (o, r) == ("owner", "repo")
 
 
 def test_parse_repo_url_accepts_dot_git() -> None:
-    o, r, i = parse_repo_url("https://github.com/owner/repo.git")
-    assert (o, r, i) == ("owner", "repo", None)
-
-
-def test_parse_repo_url_accepts_embedded_issue() -> None:
-    o, r, i = parse_repo_url("https://github.com/owner/repo/issues/42")
-    assert (o, r, i) == ("owner", "repo", 42)
+    o, r = parse_repo_url("https://github.com/owner/repo.git")
+    assert (o, r) == ("owner", "repo")
 
 
 def test_parse_repo_url_accepts_hyphens_and_dots() -> None:
-    o, r, i = parse_repo_url("https://github.com/my-org/some.repo.js")
-    assert (o, r, i) == ("my-org", "some.repo.js", None)
+    o, r = parse_repo_url("https://github.com/my-org/some.repo.js")
+    assert (o, r) == ("my-org", "some.repo.js")
 
 
 def test_parse_repo_url_rejects_garbage() -> None:
@@ -122,9 +116,6 @@ def test_run_oss_helper_assembles_evidence_and_calls_llm(tmp_path, monkeypatch) 
       - `WikiRagAdapter.__init__` to point at the tmp_path fixture repo
         (avoids network/git entirely)
       - the LLM via a scripted adapter that echoes the prompt back
-      - `GitHubIssueAdapter` via a subclass that records calls and returns
-        canned results (no httpx mock plumbing needed -- we're testing
-        wiring, not the adapter)
     """
     # 1. Build the fake wiki corpus from the tmp repo
     repo = _make_repo_tree(tmp_path)
@@ -140,35 +131,10 @@ def test_run_oss_helper_assembles_evidence_and_calls_llm(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(wiki_rag.WikiRagAdapter, "__init__", patched_init)
 
-    # 3. Patch GitHubIssueAdapter to return canned evidence (no network)
-    from agentops_workbench.adapters import github_issue
-
-    class _FakeIssue(github_issue.GitHubIssueAdapter):
-        def search_evidence(self, query, top_k=5, window=None, filters=None):
-            from datetime import datetime, timezone
-
-            from agentops_workbench.adapters.base import EvidenceRef
-            return [
-                EvidenceRef(
-                    ref_id="42", title="issue: install docs wrong",
-                    score=1.0, source_kind="github-issue",
-                    retrieved_at=datetime.now(timezone.utc).isoformat(),
-                ),
-            ]
-
-        def read_evidence(self, ref_id, offset=0, limit=2000):
-            return "User reports the install steps in the README don't match the docs/guide/install.md page."
-
-    monkeypatch.setattr(github_issue, "GitHubIssueAdapter", _FakeIssue)
-    # oss_helper imports GitHubIssueAdapter directly via `from .adapters.github_issue import`,
-    # so patch BOTH names for the same fake class to take effect.
-    import agentops_workbench.oss_helper as _oh
-    monkeypatch.setattr(_oh, "GitHubIssueAdapter", _FakeIssue)
-
     # 4. Stub out the URL parser to return our fake owner/repo
     monkeypatch.setattr(
         "agentops_workbench.oss_helper.parse_repo_url",
-        lambda url: ("owner", "hello-world", None),
+        lambda url: ("owner", "hello-world"),
     )
 
     # 5. Stub out the bulk-acquisition (no network, no git)
@@ -183,28 +149,22 @@ def test_run_oss_helper_assembles_evidence_and_calls_llm(tmp_path, monkeypatch) 
         "https://github.com/owner/hello-world",
         question="how do I install?",
         adapter=adapter,
-        github_token=None,
     )
 
     assert isinstance(result, TriageResult)
     assert result.owner == "owner"
     assert result.repo == "hello-world"
-    assert result.issue_number is None
     assert result.question == "how do I install?"
 
     # Both adapters produced real evidence
     assert len(result.wiki_refs) >= 1, result.wiki_refs
-    assert len(result.issue_refs) == 1
-    assert result.issue_refs[0]["ref_id"] == "42"
 
     # The LLM was actually called with a prompt that contained both
     # evidence blocks. We prove the wiring by reading what was sent.
     assert len(adapter.calls) == 1
     sent_prompt = adapter.calls[0][0]["content"]
     assert "Docs evidence" in sent_prompt
-    assert "Issue/PR evidence" in sent_prompt
     assert "installation" in sent_prompt.lower()  # wiki content present
-    assert "install steps in the README" in sent_prompt  # issue content present
     assert "hello-world" in sent_prompt  # repo name in header
 
     # The LLM echo'd the prompt back as the answer -- proves the answer
@@ -265,17 +225,11 @@ def test_web_post_runs_flow_and_renders_answer(client, monkeypatch) -> None:
     fake = oh.TriageResult(
         owner="octocat",
         repo="hello-world",
-        issue_number=42,
         question="how do I install?",
-        answer="Per docs/install.md and issue #42, run `pip install hello-world`.",
+        answer="Per docs/install.md, run `pip install hello-world`.",
         wiki_refs=[
             {"ref_id": "docs__install.md", "title": "installation guide",
              "score": 0.91, "source_kind": "wiki",
-             "retrieved_at": "2026-09-14T00:00:00+00:00"},
-        ],
-        issue_refs=[
-            {"ref_id": "42", "title": "install docs wrong",
-             "score": 1.0, "source_kind": "github-issue",
              "retrieved_at": "2026-09-14T00:00:00+00:00"},
         ],
         warnings=[],
@@ -287,14 +241,15 @@ def test_web_post_runs_flow_and_renders_answer(client, monkeypatch) -> None:
         "/oss-helper",
         data={"repo_url": "https://github.com/octocat/hello-world",
               "question": "how do I install?",
-              "issue_number": "42"},
+},
         follow_redirects=False,
     )
     assert r.status_code == 200
     body = r.text
     assert "octocat/hello-world" in body
-    assert "42" in body  # issue number
-    assert "1 doc refs, 1 issue/PR refs" in body
+    assert "docs: <strong>1</strong>" in body
+    # Match the count badge via a substring check (avoid quote-escaping pain)
+    assert chr(60) + "span " in body
     assert "123ms" in body
     assert "pip install hello-world" in body  # answer text
     assert "installation guide" in body  # wiki ref title
