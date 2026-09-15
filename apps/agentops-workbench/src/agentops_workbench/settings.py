@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # (e.g. an exported personal wiki); falls back to docs_dir when empty.
     # Uses WikiRagAdapter (TF-IDF over *.md) for the planner topology and
     # the same lexical scan as docs_dir for the fixed topology.
+    #
+    # Multi-tenant caveat (Major 6 in PR #39 review, marked PLAUSIBLE):
+    # wiki_dir is read from process-global settings, NOT per principal_id.
+    # In a multi-tenant deployment every authenticated principal reads the
+    # same wiki tree. Either scope by principal_id (deferred — needs an
+    # auth-aware corpus resolution path) or document this caveat to the
+    # operator. This docstring is the documentation half; scoping is a
+    # separate ADR-level decision.
     docs_dir: str = "fixtures/docs"
     wiki_dir: str = ""
 
