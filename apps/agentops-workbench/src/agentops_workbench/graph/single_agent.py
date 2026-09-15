@@ -32,7 +32,13 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from ..llm.adapter import LLMAdapter
-from ..mcp import DocRef, DocumentClient, InMemoryDocumentClient, MCPError, classify_mcp_error
+from ..mcp import (
+    DocRef,
+    DocumentClient,
+    MCPError,
+    build_document_client,
+    classify_mcp_error,
+)
 from ..settings import DEFAULT_CORPUS_DIR
 from .fixed import (
     _CLARIFY_MESSAGE,
@@ -273,17 +279,8 @@ def run_single_agent(
     wiki_mode: bool = False,
 ) -> SingleAgentOutput:
     """Single-agent loop. Stops on ANSWER/REFUSE/CLARIFY or budget exhaustion."""
-    if document_client is None:
-        # See the equivalent block in run_planner_executor — wiki_mode
-        # is the explicit opt-in to WikiRagAdapter so an operator who
-        # only overrode docs_dir keeps the original InMemoryDocumentClient.
-        if wiki_mode:
-            from ..adapters.wiki_rag import WikiRagAdapter
-
-            document_client = WikiRagAdapter(corpus_dir)
-        else:
-            document_client = InMemoryDocumentClient()
-    client: DocumentClient = document_client
+    client = build_document_client(corpus_dir, wiki_mode, document_client)
+    assert client is not None, "build_document_client must return a non-None client"
     initial: _SingleAgentState = {
         "adapter": adapter,
         "document_client": client,

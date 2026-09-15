@@ -69,6 +69,34 @@ class InMemoryDocumentClient:
         return [f.name for f in self._files]
 
 
+def build_document_client(
+    corpus_dir: str,
+    wiki_mode: bool,
+    document_client: DocumentClient | None = None,
+) -> DocumentClient | None:
+    """Adapter-selection factory shared by `run_planner_executor` and `run_single_agent`.
+
+    Returns the explicit `document_client` when one is injected
+    (test/CI overrides). Otherwise:
+
+    - `wiki_mode=True`  → `WikiRagAdapter(corpus_dir)` (TF-IDF over *.md)
+    - `wiki_mode=False` → `InMemoryDocumentClient()` (substring scan)
+
+    The wiki_mode discriminator prevents an operator who only overrode
+    `AGENTOPS_DOCS_DIR` from silently switching the planner/single_agent
+    topologies to a different retrieval algorithm — the operator has to
+    explicitly set `AGENTOPS_WIKI_DIR` (or pass `wiki_mode=True` from
+    server.py via `Settings.resolved_corpus`) to opt into TF-IDF.
+    """
+    if document_client is not None:
+        return document_client
+    if wiki_mode:
+        from ..adapters.wiki_rag import WikiRagAdapter
+
+        return WikiRagAdapter(corpus_dir)
+    return InMemoryDocumentClient()
+
+
 class MCPError(Exception):
     """Normalised MCP error envelope."""
 

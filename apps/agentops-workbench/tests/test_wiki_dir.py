@@ -53,23 +53,31 @@ def test_run_fixed_graph_threads_corpus_dir(wiki_dir: Path) -> None:
 def test_wiki_rag_adapter_used_for_planner_topology(
     wiki_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """planner_executor constructs WikiRagAdapter when corpus_dir is non-default."""
+    """planner_executor uses WikiRagAdapter when wiki_mode=True (and InMemoryDocumentClient otherwise).
+
+    Uses `build_document_client` directly rather than inspect.getsource on
+    run_planner_executor — the test couples to the documented factory
+    contract, not the source-string of a caller.
+    """
     from agentops_workbench.adapters.wiki_rag import WikiRagAdapter
-    from agentops_workbench.graph import planner_executor as pe
+    from agentops_workbench.mcp import InMemoryDocumentClient, build_document_client
 
-    # Direct construction path: run_planner_executor(corpus_dir=str(wiki_dir))
-    # picks WikiRagAdapter, not InMemoryDocumentClient.
-    import inspect
+    # wiki_mode=True -> WikiRagAdapter(corpus_dir)
+    wiki_client = build_document_client(str(wiki_dir), wiki_mode=True)
+    assert isinstance(wiki_client, WikiRagAdapter)
+    assert wiki_client._wiki_dir == str(wiki_dir)
 
-    src = inspect.getsource(pe.run_planner_executor)
-    assert "WikiRagAdapter" in src, (
-        "planner_executor.run_planner_executor should construct WikiRagAdapter "
-        "when corpus_dir is non-default"
-    )
+    # wiki_mode=False -> InMemoryDocumentClient (substring scan, NOT TF-IDF)
+    plain_client = build_document_client("fixtures/docs", wiki_mode=False)
+    assert isinstance(plain_client, InMemoryDocumentClient)
 
-    # Smoke: the adapter accepts our wiki_dir and finds the files.
-    adapter_inst = WikiRagAdapter(str(wiki_dir))
-    hits = adapter_inst.search_evidence("checkpointing postgres", top_k=2)
+    # Explicit document_client overrides both
+    sentinel = InMemoryDocumentClient()
+    override = build_document_client(str(wiki_dir), wiki_mode=True, document_client=sentinel)
+    assert override is sentinel, "explicit document_client must be returned as-is"
+
+    # Smoke: the adapter actually retrieves from the wiki_dir corpus
+    hits = wiki_client.search_evidence("checkpointing postgres", top_k=2)
     assert hits, "WikiRagAdapter must return at least one hit on its own corpus"
     assert hits[0].source_kind == "wiki"
     assert hits[0].ref_id in {"alpha", "beta"}
