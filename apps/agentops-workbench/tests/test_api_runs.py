@@ -67,13 +67,17 @@ def test_valid_token_accepted(client: TestClient) -> None:
 
 
 def test_run_reaches_terminal_state(client: TestClient) -> None:
+    """"LangGraph checkpointing" retrieves doc-001/doc-002 deterministically
+    under local-fake (see graph/fixed.py's retrieval-only classifier) --
+    this must actually reach succeeded with a real answer, not merely
+    "succeeded or failed" with the answer check gated behind a condition
+    that could always be false."""
     r = client.post("/v1/runs", json={"task": "How do I configure LangGraph checkpointing?"}, headers=_bearer())
     assert r.status_code == 201
     body = r.json()
-    assert body["state"] in {RunState.SUCCEEDED.value, RunState.FAILED.value}
     assert body["id"]
-    if body["state"] == RunState.SUCCEEDED.value:
-        assert body["answer"]
+    assert body["state"] == RunState.SUCCEEDED.value
+    assert body["answer"]
 
 
 def test_get_run_returns_run_view(client: TestClient) -> None:
@@ -187,9 +191,12 @@ def test_fixed_graph_returns_terminal_state_for_any_task() -> None:
 
 
 def test_fixed_graph_refuses_when_classifier_returns_refuse() -> None:
-    # Force refuse by writing a script that contains REFUSE token
+    """`_classify` is deterministic on retrieval, not the LLM (see
+    graph/fixed.py) -- a task whose tokens match no fixture doc always
+    routes to refuse. Previously this test's condition
+    (`if out.route == "refuse"`) made the assertion inside it vacuous
+    whenever the route came back "answer" instead."""
     a = LocalFakeAdapter()
-    out = run_fixed_graph(a, "anything")
-    # route may vary across script indices; just verify shape
-    if out.route == "refuse":
-        assert "Insufficient evidence" in (out.answer or "")
+    out = run_fixed_graph(a, "zzqxplorp fribbaz wattlesnorf glimwick")
+    assert out.route == "refuse"
+    assert "Insufficient evidence" in (out.answer or "")
