@@ -227,11 +227,17 @@ src/agentops_workbench/
   mcp/mcp_servers/{document,filesystem}/...
   mocks/tickets.py           # idempotent mock ledger
   observability/otel.py      # Tracer + redact
+  web/                        # Next.js 15 chat UI (multi-turn + Faithfulness
+                             # dashboard + Obsidian deep-links); see
+                             # `Web UI (wiki chat)` section below.
 docs/
   scope.md                   # in/out scope
   RUNBOOK.md                 # bring up + clear ledger + read trace
   EVIDENCE_CARD.md           # what we built + what we measured
   demo.md                    # 5-minute demo script
+  web/                        # Next.js 15 chat UI (multi-turn + Faithfulness
+                             # dashboard + Obsidian deep-links); see
+                             # "Web UI (wiki chat)" below.
   adr/0001..0007-*.md        # design decisions (0007 = evidence-source adapters, open PR)
 fixtures/
   cases/{dev,val,held_out,pilot}/case-*.json
@@ -248,6 +254,88 @@ docker/
 uv run pytest -q     # 154 tests
 uv run ruff check .  # clean
 ```
+
+## Web UI (wiki chat)
+
+`web/` is a Next.js 15 single-page app for the wiki evidence
+surface — multi-turn chat over the operator's picked local directory
+of `.md` notes, with four academic-grounded groundedness metrics on
+every turn, a Faithfulness dashboard, and Obsidian deep-links when
+the picked directory is an Obsidian vault.
+
+```bash
+# In one terminal: the FastAPI backend (serves /v1/wiki/* including
+# /v1/wiki/metrics the dashboard polls).
+AGENTOPS_PROVIDER=minimax AGENTOPS_ALLOW_DEV_TOKEN=1 \
+  uv run uvicorn agentops_workbench.api.server:app --port 8000
+
+# In another terminal: the Next.js dev server.
+cd web && npm install && npx next dev --port 3000
+
+# Open http://localhost:3000/ -- auto-mints a dev JWT, no token paste.
+# Pick a directory, then ask questions; prior turns stay visible and
+# the LangGraph checkpointer on the server keeps the conversation
+# thread live across HTTP calls.
+```
+
+### How Faithfulness is measured
+
+Per **Maynez et al., 2020** ("On the Faithfulness and Factuality
+in Abstractive Summarization") with the dependency-light
+lexical-entailment proxy from **Goodrich et al., 2019** (no NLI
+model needed):
+
+1. The LLM's answer is split into atomic facts — one per sentence,
+   after stripping inline `[N]` citation markers so a sentence like
+   `"Postgres persists checkpoints [1]."` becomes the fact
+   `"Postgres persists checkpoints."`.
+2. Each fact tokenizes with the codebase's standard alphanumeric
+   pattern (`[a-z0-9]+`).
+3. The cited evidence (the union of `[N]`-resolved entries) tokenizes
+   the same way.
+4. **Jaccard token overlap per fact**: `|fact_tokens ∩ evidence_tokens|
+   / |fact_tokens|`. A paraphrase scores 0.5-0.7, a fully-supported
+   claim scores 1.0, a fabrication (different vocab) scores
+   0.0-0.1.
+5. Mean across the answer's facts is the **per-turn badge**; mean
+   across the trailing 200-call window is the **dashboard bar**.
+
+A score of `0.000` on the dashboard means the LLM was answering
+without evidence overlap — typically because the picked vault
+doesn't contain the topic of the question. Pick a vault with the
+relevant content (or just ask about what's in the picked dir)
+and the score will rise.
+
+### Citation metrics
+
+Alongside Faithfulness, every turn shows three more academic metrics:
+
+- **ROUGE-L F1** (Lin, 2004) — sentence vs cited-evidence overlap
+  via LCS. Per-sentence P/R/F1 + answer-level aggregate.
+- **Citation Recall** (Honovich et al., 2022) — fraction of the LLM's
+  sentences that carry a `[N]` citation resolving to real evidence.
+- **Citation Precision** (Honovich et al., 2022) — fraction of
+  emitted `[N]` markers that resolve to real evidence. Catches
+  fabricated citations.
+
+### Obsidian deep-links
+
+If the picked directory's root contains `.obsidian/`, the frontend
+auto-detects it on upload, sends `vault_name=<root.name>` to the
+server, and every hit's `obsidian_uri` is stamped as
+`obsidian://open?vault=<vault>&file=<path>`. The References tab
+opens by default; each entry is a one-click "open in Obsidian" deep
+link. If the picked dir isn't an Obsidian vault, references fall
+back to `file:///<path>` so the link still works in the OS file
+explorer.
+
+### Latency dashboard
+
+Per-stage p50/p95 of `/v1/wiki/search` and `/v1/wiki/qa` over a
+trailing 200-call window: `tokenize / score / sort+return / total`
+in ms. If a stage's p95 dominates total p95, look there first —
+on the current code base, `score` (the BM25-or-fallback full-text
+scan over the corpus) is usually the slow tail.
 
 ## References
 
