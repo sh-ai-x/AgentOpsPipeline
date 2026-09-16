@@ -37,13 +37,20 @@ integrations, an MCP document server and a pinned filesystem server.
 
 ## Screenshot
 
-The Streamlit operator UI after submitting the default query — run `succeeded`,
-415 tokens, and a synthesized answer that quotes `doc-001` from the corpus.
-Note **tool calls: 0** — the agent retrieves and answers but never calls a tool
-(see [the central gap](#the-central-gap)). Full gallery (6 shots) in the app
-README: [`apps/agentops-workbench/README.md#screenshots`](apps/agentops-workbench/README.md#screenshots).
+The current operator UI is the **Next.js 15 web chat** at
+`apps/agentops-workbench/web/` (multi-turn, groundedness metrics
+per turn, Obsidian deep-links, Faithfulness + Citation Recall +
+Citation Precision + ROUGE-L F1 + per-stage latency dashboard).
+The legacy `02_after_submit.png` is the previous-generation
+Streamlit UI; kept for comparison.
+Full gallery (6 shots) of the legacy Streamlit UI in
+[`apps/agentops-workbench/README.md#screenshots`](apps/agentops-workbench/README.md#screenshots);
+the new web UI's "How Faithfulness is measured" / dashboard layout
+is documented in
+[`apps/agentops-workbench/README.md#web-ui-wiki-chat`](apps/agentops-workbench/README.md#web-ui-wiki-chat).
 
-![AgentOps Workbench — Streamlit UI after a run](apps/agentops-workbench/docs/screenshots/02_after_submit.png)
+![AgentOps Workbench — web chat UI dashboard view (Metrics panel showing Citation Precision 100%, Citation Recall 53%, ROUGE-L F1 6%, Faithfulness 0%, and per-stage latency)](apps/agentops-workbench/docs/screenshots/07_web_chat_dashboard.png)
+*(regenerate from the live page at `localhost:3000` after a few `/v1/wiki/qa` calls have populated the trailing 200-call window)*
 
 ---
 
