@@ -27,6 +27,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
@@ -159,6 +160,10 @@ class WikiSearchHit:
     coverage: float                       # matched query terms / total
     contributing_terms: list[str]         # top terms that pushed the score
     mtime: int                            # file mtime (epoch ms)
+    # Optional Obsidian deep link: set when the indexed directory's
+    # root contained `.obsidian/` AND the upload supplied `vault_name`.
+    # Frontend uses this for one-click "open in vault" on every hit.
+    obsidian_uri: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -171,6 +176,7 @@ class WikiSearchHit:
             "coverage": round(self.coverage, 4),
             "contributing_terms": self.contributing_terms,
             "mtime": self.mtime,
+            "obsidian_uri": self.obsidian_uri,
         }
 
 
@@ -195,6 +201,11 @@ class _CorpusEntry:
     # *inside* the user's pick so the UI shows a human-readable label.
     source_paths: dict[str, str]
     mtimes: dict[str, int]
+    # When the picked directory was an Obsidian vault, the browser
+    # supplies the vault name in `index_uploaded_files(...)` so we can
+    # mint `obsidian://open?vault=<vault>&file=<source_path>` deep
+    # links on every hit. None for arbitrary picked directories.
+    vault_name: str | None = None
     last_used: float = field(default_factory=time_monotonic)
 
 
@@ -271,9 +282,14 @@ class WikiCorpusRegistry:
 
 def index_uploaded_files(
     files: list[dict],
+    *,
+    vault_name: str | None = None,
 ) -> tuple[str, Path, int]:
     """Write uploaded {path, content, mtime} entries to a temp dir and
-    build a WikiRagAdapter on top.
+    build a WikiRagAdapter on top. `vault_name`, when supplied,
+    records an Obsidian vault name on the corpus entry so every
+    search hit can mint an `obsidian://` deep link for one-click
+    opening in the user's vault.
 
     Returns (corpus_id, work_dir, doc_count). The caller is responsible
     for cleanup via cleanup_corpus(corpus_id) — or letting the registry
@@ -322,6 +338,7 @@ def index_uploaded_files(
             entry.source_paths[rid] = str(
                 path.relative_to(work_dir)
             )
+    entry.vault_name = vault_name
     doc_count = len(entry.adapter._files)
     return corpus_id, work_dir, doc_count
 
@@ -344,6 +361,16 @@ def _cleanup_work_dir(work_dir: Path) -> None:
 
 
 def search(corpus_id: str, query: str, top_k: int = 5) -> list[WikiSearchHit]:
+    """Back-compat wrapper: returns just the hits. New callers should
+    use `search_with_timing()` so per-stage latency is available for
+    the /v1/wiki/metrics aggregator."""
+    hits, _ = search_with_timing(corpus_id, query, top_k=top_k)
+    return hits
+
+
+def search_with_timing(
+    corpus_id: str, query: str, top_k: int = 5,
+) -> tuple[list[WikiSearchHit], dict[str, float]]:
     """Run WikiRagAdapter.search_evidence + attach provenance fields.
 
     AC3 fields populated:
@@ -353,19 +380,43 @@ def search(corpus_id: str, query: str, top_k: int = 5) -> list[WikiSearchHit]:
       - coverage:       |matched_query_terms| / |query_terms|
       - contributing_terms: top-K terms by per-term TF-IDF contribution
       - mtime:          upload-time file mtime
+      - obsidian_uri:    optional `obsidian://open?...` deep link
+        (set when the indexed directory was an Obsidian vault — see
+        `IndexFilesBody.vault_name` and the upload path in server.py)
+
+    Returns `(hits, timing_ms)` where `timing_ms` is
+    `{tokenize_ms, score_ms, sort_and_return_ms, total_ms}` for the
+    dashboard's p50/p95 aggregator.
     """
+    _t0 = time.monotonic()
+    timing_ms: dict[str, float] = {}
     entry = get_registry().get(corpus_id)
     adapter = entry.adapter
 
     raw_hits = adapter.search_evidence(query, top_k=top_k)
     if not raw_hits:
-        return []
+        total = (time.monotonic() - _t0) * 1000.0
+        timing_ms.update(
+            {
+                "tokenize_ms": 0.0,
+                "score_ms": 0.0,
+                "sort_and_return_ms": 0.0,
+                "total_ms": total,
+            }
+        )
+        return [], timing_ms
 
+    _t_tokenize = time.monotonic()
     query_terms = set(tokenize(query))
+    timing_ms["tokenize_ms"] = (time.monotonic() - _t_tokenize) * 1000.0
     if not query_terms:
-        return []
+        timing_ms["score_ms"] = 0.0
+        timing_ms["sort_and_return_ms"] = 0.0
+        timing_ms["total_ms"] = (time.monotonic() - _t0) * 1000.0
+        return [], timing_ms
 
     out: list[WikiSearchHit] = []
+    _t_score = time.monotonic()
     for r in raw_hits:
         ref_id = r.ref_id
         full_text = adapter.read_evidence(ref_id, limit=10_000)
@@ -414,6 +465,16 @@ def search(corpus_id: str, query: str, top_k: int = 5) -> list[WikiSearchHit]:
             offsets_in_doc = []
 
         coverage = len(matched_terms) / len(query_terms)
+        # Obsidian deep link: only when the corpus was indexed from an
+        # Obsidian vault (`vault_name` set at upload time). Matches the
+        # earlier wiki_ingest.py convention (path is kept verbatim,
+        # .md suffix preserved).
+        obsidian_uri: str | None = None
+        if entry.vault_name:
+            obsidian_uri = (
+                f"obsidian://open?vault={entry.vault_name}"
+                f"&file={entry.source_paths.get(ref_id, ref_id)}"
+            )
         out.append(
             WikiSearchHit(
                 ref_id=ref_id,
@@ -425,9 +486,17 @@ def search(corpus_id: str, query: str, top_k: int = 5) -> list[WikiSearchHit]:
                 coverage=coverage,
                 contributing_terms=contributing,
                 mtime=entry.mtimes.get(ref_id, 0),
+                obsidian_uri=obsidian_uri,
             )
         )
-    return out
+    timing_ms["score_ms"] = (time.monotonic() - _t_score) * 1000.0
+
+    _t_sort = time.monotonic()
+    out.sort(key=lambda h: -h.score)
+    timing_ms["sort_and_return_ms"] = (time.monotonic() - _t_sort) * 1000.0
+
+    timing_ms["total_ms"] = (time.monotonic() - _t0) * 1000.0
+    return out, timing_ms
 
 
 def _span_around_offsets(

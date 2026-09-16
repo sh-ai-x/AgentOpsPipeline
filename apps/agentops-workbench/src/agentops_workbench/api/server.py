@@ -41,6 +41,12 @@ from ..graph.topology import run_topology
 from ..llm.factory import make_adapter
 from ..mocks.tickets import TicketLedger
 from ..settings import get_settings
+from ..wiki_metrics import (
+    GroundednessRecorder,
+    GroundednessSample,
+    StageLatencyRecorder,
+    StageSample,
+)
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +65,14 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="AgentOps Workbench API", version="0.2.0", lifespan=_lifespan)
+
+# Module-level metrics aggregators. Singleton pattern matches the wiki
+# corpus registry -- process-local, lifetime = process lifetime. Tests
+# reset via `reset_for_tests()`. The 200-sample trailing window is small
+# enough that p50/p95 stays cheap to compute on every dashboard poll,
+# and large enough that the numbers don't jitter every refresh.
+search_metrics = StageLatencyRecorder(window=200)
+groundedness_metrics = GroundednessRecorder(window=200)
 
 # Single ledger instance per process. Step 6 wires DI properly.
 _ledger: TicketLedger | None = None
@@ -731,6 +745,12 @@ class _WikiFileUpload(BaseModel):
 
 class IndexFilesBody(BaseModel):
     files: list[_WikiFileUpload]
+    # When the picked directory was an Obsidian vault, the browser
+    # supplies the vault name so the server can construct
+    # `obsidian://open?vault=<vault>&file=<path>` deep links for every
+    # search hit. Optional: missing -> no deep links emitted (avoids
+    # guessing a vault to open).
+    vault_name: str | None = None
 
 
 class IndexFilesResponse(BaseModel):
@@ -750,6 +770,10 @@ class WikiHit(BaseModel):
     coverage: float
     contributing_terms: list[str]
     mtime: int
+    # Set only when the indexed directory was an Obsidian vault (browser
+    # supplied vault_name on upload). The frontend uses this for a
+    # one-click "open in vault" link on every hit.
+    obsidian_uri: str | None = None
 
 
 class WikiSearchResponse(BaseModel):
@@ -813,7 +837,7 @@ def index_files(
     ]
     try:
         corpus_id, _work_dir, doc_count = wiki_corpus.index_uploaded_files(
-            files_payload
+            files_payload, vault_name=body.vault_name
         )
     except ValueError as exc:
         raise HTTPException(
@@ -843,18 +867,52 @@ def wiki_search_endpoint(
     or never existed)."""
     effective_top_k = max(1, min(top_k, 20))
     try:
-        hits = wiki_corpus.search(corpus_id, q, top_k=effective_top_k)
+        hits, timing_ms = wiki_corpus.search_with_timing(
+            corpus_id, q, top_k=effective_top_k
+        )
     except wiki_corpus.UnknownCorpusError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"corpus_id not found: {exc.corpus_id}",
         ) from exc
+    # Record one latency sample per call -- the dashboard's p50/p95
+    # bars are built off this rolling window.
+    search_metrics.record(
+        StageSample(
+            tokenize_ms=timing_ms.get("tokenize_ms", 0.0),
+            score_ms=timing_ms.get("score_ms", 0.0),
+            sort_and_return_ms=timing_ms.get("sort_and_return_ms", 0.0),
+            total_ms=timing_ms.get("total_ms", 0.0),
+        )
+    )
     return WikiSearchResponse(
         query=q,
         corpus_id=corpus_id,
         top_k=effective_top_k,
         results=[WikiHit(**h.to_dict()) for h in hits],
     )
+
+
+@app.get("/v1/wiki/metrics")
+def wiki_metrics_endpoint(
+    principal_id: str = Depends(require_principal),
+) -> dict[str, Any]:
+    """Aggregate observability for the wiki chat surface.
+
+    Two views, both covering the trailing 200-call window:
+      - `latency`: per-stage p50/p95 ms from /v1/wiki/search calls
+        (tokenize / score / sort+return / total).
+      - `groundedness`: per-call ROUGE-L F1, Citation Recall, Citation
+        Precision averages from /v1/wiki/qa calls -- the
+        "is the model hallucinating?" signal the operator watches.
+
+    Same dev-only-ish posture as `/_debug/metrics`: the data here is
+    operational, not customer-facing, but it is still behind the JWT
+    gate so an unauthenticated probe can't enumerate timing."""
+    return {
+        "latency": search_metrics.stats(),
+        "groundedness": groundedness_metrics.stats(),
+    }
 
 
 @app.post("/v1/wiki/qa", response_model=QaResponse)
@@ -896,6 +954,19 @@ def wiki_qa(
     # 3. Compose the prompt. Force `[ref_id]` citations by example and
     #    require a refusal if no relevant evidence was found.
     if not hits:
+        # The empty-hits case is itself a metric: a high rate of
+        # queries returning no evidence means the corpus is being
+        # queried for things it doesn't contain, OR the index is
+        # broken. Record it the same way as a normal answer so the
+        # dashboard's "accuracy / hallucination" panel reflects the
+        # true state of the system.
+        groundedness_metrics.record(
+            GroundednessSample(
+                rouge_l_f1=0.0,
+                citation_recall=0.0,
+                citation_precision=0.0,
+            )
+        )
         return QaResponse(
             query=body.query,
             corpus_id=body.corpus_id,
@@ -938,6 +1009,17 @@ def wiki_qa(
     overall_rouge_l = groundedness.answer_overall_rouge_l(scores)
     cit_recall = groundedness.answer_citation_recall(scores)
     cit_precision = groundedness.answer_citation_precision(scores)
+    # Record one groundedness sample per call -- the dashboard's
+    # "Accuracy / hallucination" panel aggregates these over the
+    # trailing 200-call window so a reviewer can see whether the
+    # model is drifting, not just what one turn did.
+    groundedness_metrics.record(
+        GroundednessSample(
+            rouge_l_f1=overall_rouge_l,
+            citation_recall=cit_recall,
+            citation_precision=cit_precision,
+        )
+    )
     duration_ms = int((_time.monotonic() - started) * 1000)
     log.info(
         "wiki qa: principal=%s corpus_id=%s hits=%d sentences=%d "

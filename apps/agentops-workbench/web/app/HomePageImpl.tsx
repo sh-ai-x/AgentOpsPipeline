@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import MetricsPanel from "./MetricsPanel";
+
 // AC3 trust-field types — must match backend `WikiHit.to_dict()`.
 type Hit = {
   ref_id: string;
@@ -13,6 +15,9 @@ type Hit = {
   coverage: number;
   contributing_terms: string[];
   mtime: number;
+  // Set only when the indexed directory was an Obsidian vault (browser
+  // supplied vault_name on upload). One-click "open in vault" link.
+  obsidian_uri?: string | null;
 };
 
 type SentenceScore = {
@@ -245,7 +250,7 @@ export default function HomePageImpl() {
   const [qaResp, setQaResp] = useState<QaResponse | null>(null);
 
   const authHeaders = useCallback(
-    () => (bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+    (): Record<string, string> => (bearer ? { Authorization: `Bearer ${bearer}` } : {}),
     [bearer],
   );
 
@@ -467,7 +472,21 @@ export default function HomePageImpl() {
             {hits?.map((h, i) => (
               <article className="hit" key={`${h.ref_id}-${i}`}>
                 <div className="hit-title">
-                  <code>{h.source_path}</code> — <em>{h.ref_id}</em>
+                  {h.obsidian_uri ? (
+                    <a
+                      className="hit-link"
+                      href={h.obsidian_uri}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Open in Obsidian vault"
+                    >
+                      <code>{h.source_path}</code> — <em>{h.ref_id}</em>
+                    </a>
+                  ) : (
+                    <>
+                      <code>{h.source_path}</code> — <em>{h.ref_id}</em>
+                    </>
+                  )}
                 </div>
                 <div className="hit-meta">
                   <span className="metric">
@@ -578,7 +597,21 @@ export default function HomePageImpl() {
                 {qaResp.hits.slice(0, 3).map((h, i) => (
                   <article className="hit" key={`qa-${h.ref_id}-${i}`}>
                     <div className="hit-title">
-                      <code>{h.source_path}</code> — <em>{h.ref_id}</em>
+                      {h.obsidian_uri ? (
+                        <a
+                          className="hit-link"
+                          href={h.obsidian_uri}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Open in Obsidian vault"
+                        >
+                          <code>{h.source_path}</code> — <em>{h.ref_id}</em>
+                        </a>
+                      ) : (
+                        <>
+                          <code>{h.source_path}</code> — <em>{h.ref_id}</em>
+                        </>
+                      )}
                     </div>
                     <div className="hit-meta">
                       score <strong>{h.score.toFixed(3)}</strong>
@@ -592,6 +625,8 @@ export default function HomePageImpl() {
           </section>
         </>
       )}
+
+      <MetricsPanel />
 
       {error && (
         <p className="status" style={{ color: "var(--accent)" }}>

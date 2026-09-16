@@ -398,3 +398,160 @@ def test_dev_token_uses_default_principal_when_blank(
     r = client.get("/v1/auth/dev-token", params={"principal_id": "  "})
     assert r.status_code == 200
     assert r.json()["principal_id"] == "dev-user"
+
+
+# ---- Per-stage search timing + /v1/wiki/metrics aggregate endpoint ----
+
+
+def test_search_records_per_stage_timing_into_metrics_aggregator(
+    client: TestClient, bearer: dict
+) -> None:
+    """Each /v1/wiki/search call records one sample of per-stage
+    latency into the rolling-window aggregator. After several calls the
+    /v1/wiki/metrics endpoint exposes p50/p95 of those samples."""
+    from agentops_workbench.api import server as server_mod
+
+    server_mod.search_metrics.reset_for_tests()
+
+    r = client.post(
+        "/v1/wiki/index-files",
+        json={
+            "files": [
+                {
+                    "path": "notes/install.md",
+                    "content": "Install LangGraph with PostgreSQL checkpointing.",
+                    "mtime": 0,
+                },
+                {"path": "notes/auth.md", "content": "JWT HS256 with a 48-byte secret.", "mtime": 0},
+            ]
+        },
+        headers=bearer,
+    )
+    corpus_id = r.json()["corpus_id"]
+
+    for _ in range(5):
+        r = client.get(
+            "/v1/wiki/search",
+            params={"corpus_id": corpus_id, "q": "checkpointing"},
+            headers=bearer,
+        )
+        assert r.status_code == 200
+
+    metrics = client.get("/v1/wiki/metrics", headers=bearer).json()
+    assert metrics["latency"]["total_ms"]["count"] == 5
+    assert metrics["latency"]["total_ms"]["p50"] >= 0.0
+    assert metrics["latency"]["total_ms"]["p95"] >= metrics["latency"]["total_ms"]["p50"], (
+        "p95 must be >= p50 by definition"
+    )
+    for stage in ("tokenize_ms", "score_ms", "sort_and_return_ms", "total_ms"):
+        assert stage in metrics["latency"]
+        assert metrics["latency"][stage]["count"] == 5
+
+
+def test_metrics_endpoint_reports_groundedness_aggregates_across_chat_calls(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The metrics endpoint exposes the average ROUGE-L/citation scores
+    across recent /v1/wiki/qa calls -- the hallucination/accuracy panel."""
+    from agentops_workbench.api import server as server_mod
+    from agentops_workbench.llm.adapter import ChatResult, LLMAdapter, Usage
+
+    server_mod.search_metrics.reset_for_tests()
+    server_mod.groundedness_metrics.reset_for_tests()
+
+    class _Stub(LLMAdapter):
+        provider = "stub"
+        model = "stub-v1"
+
+        def chat(self, messages, **kw):
+            return ChatResult(
+                content="Answer cites real evidence. [ref]",
+                usage=Usage(provider="stub", model="stub-v1", prompt_tokens=1, completion_tokens=1, total_tokens=2, cost_usd=0.0),
+            )
+
+    monkeypatch.setattr(server_mod, "make_adapter", lambda _s: _Stub())
+
+    r = client.post(
+        "/v1/wiki/index-files",
+        json={"files": [{"path": "ref.md", "content": "real evidence text", "mtime": 0}]},
+        headers=bearer,
+    )
+    corpus_id = r.json()["corpus_id"]
+
+    for _ in range(3):
+        client.post(
+            "/v1/wiki/qa",
+            json={"corpus_id": corpus_id, "query": "explain", "top_k": 5},
+            headers=bearer,
+        )
+
+    metrics = client.get("/v1/wiki/metrics", headers=bearer).json()
+    g = metrics["groundedness"]
+    assert g["sample_count"] == 3
+    assert 0.0 <= g["rouge_l_f1_avg"] <= 1.0
+    assert 0.0 <= g["citation_recall_avg"] <= 1.0
+    assert 0.0 <= g["citation_precision_avg"] <= 1.0
+
+
+def test_metrics_endpoint_is_auth_gated(client: TestClient) -> None:
+    r = client.get("/v1/wiki/metrics")
+    assert r.status_code == 401
+
+
+# ---- Obsidian deep links on hit titles ----
+
+
+def test_search_hit_carries_obsidian_uri_when_index_dir_is_an_obsidian_vault(
+    client: TestClient, bearer: dict
+) -> None:
+    """When the indexed directory's root contained a `.obsidian/`
+    subdirectory at upload time, every hit must carry an `obsidian_uri`
+    -- the constructed `obsidian://open?vault=<vault>&file=<path>`
+    deep-link the frontend can open in the user's vault without
+    hand-editing."""
+    r = client.post(
+        "/v1/wiki/index-files",
+        json={
+            "files": [
+                {
+                    "path": "wiki/langgraph/checkpointing.md",
+                    "content": "LangGraph checkpointing via PostgresCheckpointer.",
+                    "mtime": 0,
+                }
+            ],
+            "vault_name": "MyVault",
+        },
+        headers=bearer,
+    )
+    corpus_id = r.json()["corpus_id"]
+    r = client.get(
+        "/v1/wiki/search",
+        params={"corpus_id": corpus_id, "q": "checkpointing"},
+        headers=bearer,
+    )
+    body = r.json()
+    assert body["results"], "expected at least one hit"
+    assert "obsidian_uri" in body["results"][0]
+    assert body["results"][0]["obsidian_uri"] == (
+        "obsidian://open?vault=MyVault&file=wiki/langgraph/checkpointing.md"
+    )
+
+
+def test_search_hit_obsidian_uri_omitted_when_no_vault_name_supplied(
+    client: TestClient, bearer: dict
+) -> None:
+    r = client.post(
+        "/v1/wiki/index-files",
+        json={"files": [{"path": "a.md", "content": "checkpointing", "mtime": 0}]},
+        headers=bearer,
+    )
+    corpus_id = r.json()["corpus_id"]
+    body = client.get(
+        "/v1/wiki/search",
+        params={"corpus_id": corpus_id, "q": "checkpointing"},
+        headers=bearer,
+    ).json()
+    assert body["results"]
+    assert body["results"][0].get("obsidian_uri") in (None, ""), (
+        "no vault_name -> no deep link (avoids guessing a vault to open)"
+    )
