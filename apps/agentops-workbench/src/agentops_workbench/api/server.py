@@ -824,10 +824,15 @@ class QaResponse(BaseModel):
     # Echoed back so the client can rejoin the conversation on a
     # follow-up turn. Server mints one if `body.thread_id` is None.
     thread_id: str
-    # Three answer-level published metrics.
+    # Four answer-level published metrics.
     overall_rouge_l_f1: float
     citation_recall: float
     citation_precision: float
+    # Faithfulness (Maynez et al., 2020) — mean sentence-level lexical-
+    # entailment proxy across the answer, 0..1. Independent of citation
+    # metrics: a sentence can cite [1] correctly AND still be unsupported
+    # by evidence (paraphrased fabrication). Catches that case.
+    faithfulness: float
     sentences: list[SentenceScore]
     hits: list[WikiHit]
 
@@ -966,6 +971,32 @@ def wiki_qa(
     thread_id = body.thread_id or uuid.uuid4().hex
     settings = get_settings()
     adapter = make_adapter(settings)
+    # Capture per-stage search timing for the metrics dashboard.
+    # The chat graph's internal `_retrieve_node` already times this
+    # call, but doesn't surface the numbers to the API layer; the
+    # cleanest thing for the operator's p50/p95 view is to re-time the
+    # public call once more here, on the API thread. The cost is one
+    # extra search per turn -- negligible vs the LLM latency.
+    #
+    # Skip the timing re-run entirely on the UnknownCorpusError path:
+    # there's no benefit to recording a 404 search latency.
+    search_timing_ms: dict[str, float] = {}
+    try:
+        _, search_timing_ms = wiki_corpus.search_with_timing(
+            body.corpus_id, body.query, top_k=body.top_k
+        )
+    except wiki_corpus.UnknownCorpusError:
+        # Re-raise below; just don't record latency on the error path.
+        pass
+    if search_timing_ms:
+        search_metrics.record(
+            StageSample(
+                tokenize_ms=search_timing_ms.get("tokenize_ms", 0.0),
+                score_ms=search_timing_ms.get("score_ms", 0.0),
+                sort_and_return_ms=search_timing_ms.get("sort_and_return_ms", 0.0),
+                total_ms=search_timing_ms.get("total_ms", 0.0),
+            )
+        )
     try:
         turn = run_wiki_chat(
             adapter, body.corpus_id, body.query, thread_id, top_k=body.top_k
@@ -987,13 +1018,15 @@ def wiki_qa(
             rouge_l_f1=turn.overall_rouge_l_f1,
             citation_recall=turn.citation_recall,
             citation_precision=turn.citation_precision,
+            faithfulness=turn.faithfulness,
         )
     )
     log.info(
         "wiki qa: principal=%s corpus_id=%s thread_id=%s hits=%d sentences=%d "
-        "rouge_l=%.3f cite_recall=%.3f cite_prec=%.3f",
+        "rouge_l=%.3f cite_recall=%.3f cite_prec=%.3f faithful=%.3f",
         principal_id, body.corpus_id, thread_id, len(turn.hits), len(turn.sentences),
         turn.overall_rouge_l_f1, turn.citation_recall, turn.citation_precision,
+        turn.faithfulness,
     )
     return QaResponse(
         query=body.query,
@@ -1003,6 +1036,7 @@ def wiki_qa(
         overall_rouge_l_f1=turn.overall_rouge_l_f1,
         citation_recall=turn.citation_recall,
         citation_precision=turn.citation_precision,
+        faithfulness=turn.faithfulness,
         sentences=[SentenceScore(**s) for s in turn.sentences],
         hits=[WikiHit(**h) for h in turn.hits],
     )

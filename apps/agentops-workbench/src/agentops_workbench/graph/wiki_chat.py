@@ -117,6 +117,10 @@ class ChatTurn:
     overall_rouge_l_f1: float
     citation_recall: float
     citation_precision: float
+    # Faithfulness (Maynez et al., 2020) -- mean sentence-level
+    # lexical-entailment proxy, 0..1. Catches unsupported claims
+    # even when the LLM cites correctly.
+    faithfulness: float
     cited_refs: list[str] = field(default_factory=list)
     groundedness: dict[str, Any] = field(default_factory=dict)
 
@@ -165,6 +169,7 @@ def _answer_node(state: _WikiChatState, config: RunnableConfig) -> dict[str, Any
             "overall_rouge_l_f1": 0.0,
             "citation_recall": 0.0,
             "citation_precision": 0.0,
+            "faithfulness": 0.0,
             "history": [
                 {"role": "user", "content": query},
                 {"role": "assistant", "content": _NO_EVIDENCE_ANSWER},
@@ -208,6 +213,11 @@ def _answer_node(state: _WikiChatState, config: RunnableConfig) -> dict[str, Any
     overall_rouge_l = groundedness.answer_overall_rouge_l(scores)
     cit_recall = groundedness.answer_citation_recall(scores)
     cit_precision = groundedness.answer_citation_precision(scores)
+    # Faithfulness (Maynez et al., 2020) is computed over the same
+    # scored sentences + evidence_map. A separate concern from
+    # citation metrics -- catches unsupported claims regardless of
+    # whether the LLM cited them.
+    faithful = groundedness.answer_faithfulness(scores, score_input)
 
     answer_with_refs = f"{raw_answer}\n\n---\nReferences:\n{make_references_block(hits)}"
 
@@ -221,6 +231,7 @@ def _answer_node(state: _WikiChatState, config: RunnableConfig) -> dict[str, Any
         "overall_rouge_l_f1": overall_rouge_l,
         "citation_recall": cit_recall,
         "citation_precision": cit_precision,
+        "faithfulness": faithful,
         "history": new_turns,
     }
 
@@ -277,5 +288,6 @@ def run_wiki_chat(
         overall_rouge_l_f1=result.get("overall_rouge_l_f1", 0.0),
         citation_recall=result.get("citation_recall", 0.0),
         citation_precision=result.get("citation_precision", 0.0),
+        faithfulness=result.get("faithfulness", 0.0),
         cited_refs=cited_refs,
     )

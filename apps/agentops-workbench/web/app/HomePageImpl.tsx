@@ -43,6 +43,10 @@ type QaResponse = {
   overall_rouge_l_f1: number;
   citation_recall: number;
   citation_precision: number;
+  // Maynez et al., 2020: see chat transcript badge. Independent of
+  // citation metrics -- catches unsupported claims even when the
+  // LLM cites a real [N] but paraphrases inaccurately.
+  faithfulness: number;
   sentences: SentenceScore[];
   hits: Hit[];
 };
@@ -59,6 +63,12 @@ type ChatMessage =
       overall_rouge_l_f1: number;
       citation_recall: number;
       citation_precision: number;
+      // Maynez et al., 2020: fraction of answer sentences whose tokens
+      // appear in the cited evidence. Catches unsupported claims that
+      // pass Citation Precision (which only checks whether cited refs
+      // resolve to real evidence, not whether the underlying claim is
+      // actually supported by them).
+      faithfulness: number;
     };
 
 type IndexResponse = {
@@ -413,6 +423,7 @@ export default function HomePageImpl() {
           overall_rouge_l_f1: data.overall_rouge_l_f1,
           citation_recall: data.citation_recall,
           citation_precision: data.citation_precision,
+          faithfulness: data.faithfulness,
         },
       ]);
     } catch (err) {
@@ -498,12 +509,28 @@ export default function HomePageImpl() {
                         {(m.overall_rouge_l_f1 * 100).toFixed(0)}%
                       </span>
                       <strong style={{ marginLeft: 16 }}>Citation Recall</strong>
-                      <span className="badge" style={{ backgroundColor: groundednessColor(m.citation_recall) }}>
+                      <span
+                        className="badge"
+                        style={{ backgroundColor: groundednessColor(m.citation_recall) }}
+                        title="Fraction of the LLM's sentences that carry a [N] citation resolving to real evidence"
+                      >
                         {(m.citation_recall * 100).toFixed(0)}%
                       </span>
                       <strong style={{ marginLeft: 16 }}>Citation Precision</strong>
-                      <span className="badge" style={{ backgroundColor: groundednessColor(m.citation_precision) }}>
+                      <span
+                        className="badge"
+                        style={{ backgroundColor: groundednessColor(m.citation_precision) }}
+                        title="Fraction of emitted [N] markers that resolve to real evidence (catches fabricated citations)"
+                      >
                         {(m.citation_precision * 100).toFixed(0)}%
+                      </span>
+                      <strong style={{ marginLeft: 16 }}>Faithfulness</strong>
+                      <span
+                        className="badge"
+                        style={{ backgroundColor: groundednessColor(m.faithfulness) }}
+                        title="Maynez et al., 2020: fraction of answer sentences whose tokens appear in the cited evidence. Independent of citations: catches unsupported claims that happen to cite a real [N] but paraphrase inaccurately."
+                      >
+                        {(m.faithfulness * 100).toFixed(0)}%
                       </span>
                     </p>
                     <div className="chat-bubble answer">{m.content}</div>

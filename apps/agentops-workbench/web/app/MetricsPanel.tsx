@@ -18,6 +18,8 @@ type GroundednessStats = {
   rouge_l_f1_avg: number;
   citation_recall_avg: number;
   citation_precision_avg: number;
+  // Maynez et al., 2020 -- see faithfulness badge on each turn.
+  faithfulness_avg: number;
 };
 type MetricsResponse = {
   latency: LatencyStats;
@@ -45,11 +47,11 @@ function metricColor(value: number): string {
   return "#dc2626";
 }
 
-function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
+function Stat({ label, value, color, title }: { label: string; value: string; color?: string; title?: string }) {
   return (
     <div className="metric-stat">
       <div className="metric-stat-label">{label}</div>
-      <div className="metric-stat-value" style={color ? { color } : undefined}>
+      <div className="metric-stat-value" title={title} style={color ? { color } : undefined}>
         {value}
       </div>
     </div>
@@ -148,6 +150,13 @@ export default function MetricsPanel({ bearer }: { bearer: string }) {
             color={metricColor(data.groundedness.rouge_l_f1_avg)}
           />
           <Bar value={data.groundedness.rouge_l_f1_avg} />
+          <Stat
+            label="Faithfulness (avg)"
+            value={pct(data.groundedness.faithfulness_avg)}
+            color={metricColor(data.groundedness.faithfulness_avg)}
+            title="Maynez et al., 2020: fraction of answer sentences whose tokens appear in the cited evidence. Independent of citations -- catches unsupported claims even when the LLM cites a real [N] but paraphrases inaccurately."
+          />
+          <Bar value={data.groundedness.faithfulness_avg} />
         </div>
       )}
 

@@ -76,6 +76,12 @@ class GroundednessSample:
     rouge_l_f1: float
     citation_recall: float
     citation_precision: float
+    # Mean sentence-level faithfulness (Maynez et al., 2020) for this
+    # turn, 0..1. Computed via the lexical-entailment proxy in
+    # `groundedness.answer_faithfulness`. Default 0.0 so older tests
+    # (and any caller that doesn't yet know about the metric) keep
+    # working without a forced update.
+    faithfulness: float = 0.0
 
 
 class GroundednessRecorder:
@@ -94,12 +100,14 @@ class GroundednessRecorder:
         self._rouge: deque[float] = deque(maxlen=window)
         self._recall: deque[float] = deque(maxlen=window)
         self._precision: deque[float] = deque(maxlen=window)
+        self._faithfulness: deque[float] = deque(maxlen=window)
 
     def record(self, sample: GroundednessSample) -> None:
         with self._lock:
             self._rouge.append(sample.rouge_l_f1)
             self._recall.append(sample.citation_recall)
             self._precision.append(sample.citation_precision)
+            self._faithfulness.append(sample.faithfulness)
 
     def stats(self) -> dict[str, float]:
         with self._lock:
@@ -108,6 +116,7 @@ class GroundednessRecorder:
                 "rouge_l_f1_avg": _mean(self._rouge),
                 "citation_recall_avg": _mean(self._recall),
                 "citation_precision_avg": _mean(self._precision),
+                "faithfulness_avg": _mean(self._faithfulness),
             }
 
     def reset_for_tests(self) -> None:
@@ -115,6 +124,7 @@ class GroundednessRecorder:
             self._rouge.clear()
             self._recall.clear()
             self._precision.clear()
+            self._faithfulness.clear()
 
 
 def _percentiles(samples: deque[float]) -> dict[str, float]:
