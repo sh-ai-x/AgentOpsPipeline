@@ -285,12 +285,17 @@ def run_oss_helper(
     except Exception:  # noqa: BLE001
         pass
 
+    # Single search_evidence call, reused below for wiki_refs -- the
+    # adapter's TF-IDF scan is a full linear pass over every flattened
+    # doc per call, so running it twice per request doubles the cost.
+    wiki_evs = wiki.search_evidence(query, top_k=5)
+
     # Compose the answer prompt and call the LLM.
     wiki_blob = "\n\n--\n\n".join(
         f"[{r.ref_id}] {r.title}\n{r.source_kind} score={r.score:.2f}\n" +
         # show the first ~600 chars of the body when we can fetch it
         f"{wiki.read_evidence(r.ref_id, limit=1200)}"
-        for r in wiki.search_evidence(query, top_k=5)[:5]
+        for r in wiki_evs
     ) or "(no docs evidence)"
 
     prompt = (
@@ -326,7 +331,7 @@ def run_oss_helper(
                 "source_kind": r.source_kind,
                 "retrieved_at": r.retrieved_at,
             }
-            for r in wiki.search_evidence(query, top_k=5)
+            for r in wiki_evs
         ],
         warnings=warnings,
         duration_ms=int((time.monotonic() - started) * 1000),

@@ -27,9 +27,9 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from .. import dev_metrics, oss_helper
-from ..db.models import Action, Run
+from ..db.models import Action, Run, ToolCall
 from ..db.session import session_scope
-from ..graph.state import RunState
+from ..graph.state import RunState, is_terminal, make_action_key
 from ..graph.topology import run_topology
 from ..llm.factory import make_adapter
 from ..mocks.tickets import TicketLedger
@@ -279,6 +279,9 @@ def _execute_run(run_id: str, *, corpus_dir_override: str | None = None) -> None
             if usage is not None:
                 run.total_tokens = usage.total_tokens
                 run.cost_usd = usage.cost_usd
+            tool_results = result.get("tool_results", [])
+            if tool_results:
+                _persist_tool_calls(s, run_id, tool_results)
     finally:
         adapter.close()
 
@@ -321,6 +324,11 @@ def cancel_run(run_id: str, principal_id: str = Depends(require_principal)) -> C
         run = s.get(Run, run_id)
         if run is None or run.principal_id != principal_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
+        if is_terminal(RunState(run.state)):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"cannot cancel run in terminal state {run.state!r}",
+            )
         run.state = RunState.CANCELLED.value
     return CancelResult(id=run_id, state=RunState.CANCELLED.value)
 
@@ -501,7 +509,6 @@ No login, no write-back to the target repo.</p>
          placeholder="optional free-text question">
   <button type="submit">Run</button>
 </form>
-''' + '{repo_url_value}' + '''
 </body></html>'''
 
 
@@ -562,13 +569,6 @@ def _render_ref(ref: dict) -> str:
     )
 
 
-def _render_refs(refs: list[dict]) -> str:
-    out = []
-    for r in refs:
-        out.append(_render_ref(r))
-    return "".join(out)
-
-
 def _render_refs_section(title: str, refs: list[dict]) -> str:
     """Render one evidence section: header + list of clickable refs."""
     empty = (
@@ -619,7 +619,6 @@ def _provider_name() -> str:
     """Best-effort read of the current provider setting for the status row.
     Falls back to '?' if Settings isn't reachable (e.g. during a probe)."""
     try:
-        from ..settings import get_settings
         return get_settings().provider
     except Exception:  # noqa: BLE001
         return "?"
@@ -636,11 +635,3 @@ def _format_oss_helper_html(repo_url: str, *, repo_header: str = "") -> str:
     ).replace(
         "{repo_header}", repo_header or ""
     )
-
-
-# ---- helpers for tests ----
-
-
-def _bearer(principal: str = "alice") -> dict[str, str]:
-    tok = issue_token(principal)
-    return {"Authorization": f"Bearer {tok}"}

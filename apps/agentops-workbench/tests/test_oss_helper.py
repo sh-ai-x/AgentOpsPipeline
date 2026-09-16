@@ -3,8 +3,8 @@
 Scope:
   - parse_repo_url: accepts the documented URL shapes; rejects garbage.
   - run_oss_helper: against a tiny fixture repo + mocked LLM, produces a
-    TriageResult with real evidence refs from both adapters, real
-    answer (the LLM was given both evidence blocks).
+    TriageResult with real wiki evidence refs, real answer (the LLM was
+    given the wiki evidence block).
   - the FastAPI web form: GET returns the HTML, POST returns a render of
     the TriageResult. No live network calls anywhere in this test file.
 """
