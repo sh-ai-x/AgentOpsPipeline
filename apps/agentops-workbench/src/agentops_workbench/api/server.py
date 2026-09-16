@@ -33,11 +33,12 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from .. import dev_metrics, groundedness, oss_helper, wiki_corpus
+from .. import dev_metrics, oss_helper, wiki_corpus
 from ..db.models import Action, Run, ToolCall
 from ..db.session import session_scope
 from ..graph.state import RunState, is_terminal, make_action_key
 from ..graph.topology import run_topology
+from ..graph.wiki_chat import run_wiki_chat
 from ..llm.factory import make_adapter
 from ..mocks.tickets import TicketLedger
 from ..settings import get_settings
@@ -783,12 +784,6 @@ class WikiSearchResponse(BaseModel):
     results: list[WikiHit]
 
 
-class QaBody(BaseModel):
-    corpus_id: str
-    query: str
-    top_k: int = 5
-
-
 class SentenceScore(BaseModel):
     sentence: str
     cited_refs: list[str]
@@ -806,12 +801,26 @@ class QaResponse(BaseModel):
     query: str
     corpus_id: str
     answer: str
+    # Echoed back so the client can rejoin the conversation on a
+    # follow-up turn. Server mints one if `body.thread_id` is None.
+    thread_id: str
     # Three answer-level published metrics.
     overall_rouge_l_f1: float
     citation_recall: float
     citation_precision: float
     sentences: list[SentenceScore]
     hits: list[WikiHit]
+
+
+class QaBody(BaseModel):
+    corpus_id: str
+    query: str
+    top_k: int = 5
+    # None -> start a new conversation (server mints a thread_id and
+    # returns it in QaResponse). Pass the same value back on a follow-up
+    # turn -- the LangGraph checkpointer in graph/wiki_chat.py restores
+    # that thread's history automatically; the client never resends it.
+    thread_id: str | None = None
 
 
 @app.post("/v1/wiki/index-files", response_model=IndexFilesResponse)
@@ -920,120 +929,60 @@ def wiki_qa(
     body: QaBody,
     principal_id: str = Depends(require_principal),
 ) -> QaResponse:
-    """Search + LLM answer + per-sentence groundedness via three
-    published metrics: ROUGE-L F1 (Lin, 2004), Citation Recall and
-    Citation Precision (Honovich et al., 2022).
+    """Multi-turn wiki chat. One turn = one retrieval + one LLM answer +
+    per-sentence groundedness via the published metrics (ROUGE-L F1 —
+    Lin, 2004; Citation Recall + Precision — Honovich et al., 2022).
 
-    The LLM is prompted to ground every claim with a `[ref_id]`
-    citation. Each sentence is then scored by ROUGE-L F1 over the
-    union of its cited evidence; per-sentence P/R are reported so a
-    reviewer can see *why* a sentence scored as it did.
+    The LLM is prompted to ground every claim with a bracketed
+    footnote number ([1], [2], ...) matching the evidence's own
+    numbering. The server deterministically appends a References
+    list mapping each number to its real source_path; a follow-up
+    turn resumes the conversation by `thread_id`, transmitted only
+    as a single opaque string -- the client never resends the
+    transcript. The LangGraph checkpointer
+    (`graph/wiki_chat.py::_WikiChatState.history`) restores history
+    server-side, keyed by `thread_id` in `config.configurable`.
     """
-    import time as _time
-
-    started = _time.monotonic()
-    # 1. Search the corpus for top-k evidence.
+    thread_id = body.thread_id or uuid.uuid4().hex
+    settings = get_settings()
+    adapter = make_adapter(settings)
     try:
-        hits = wiki_corpus.search(body.corpus_id, body.query, top_k=body.top_k)
+        turn = run_wiki_chat(
+            adapter, body.corpus_id, body.query, thread_id, top_k=body.top_k
+        )
     except wiki_corpus.UnknownCorpusError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"corpus_id not found: {exc.corpus_id}",
         ) from exc
-
-    # 2. Build an evidence map keyed by ref_id so the groundedness
-    #    scorer can resolve `[ref-x]` citations to their text.
-    entry = wiki_corpus.get_registry().get(body.corpus_id)
-    evidence_map: dict[str, str] = {}
-    for h in hits:
-        try:
-            evidence_map[h.ref_id] = entry.adapter.read_evidence(h.ref_id, limit=2000)
-        except Exception:  # noqa: BLE001
-            evidence_map[h.ref_id] = ""
-
-    # 3. Compose the prompt. Force `[ref_id]` citations by example and
-    #    require a refusal if no relevant evidence was found.
-    if not hits:
-        # The empty-hits case is itself a metric: a high rate of
-        # queries returning no evidence means the corpus is being
-        # queried for things it doesn't contain, OR the index is
-        # broken. Record it the same way as a normal answer so the
-        # dashboard's "accuracy / hallucination" panel reflects the
-        # true state of the system.
-        groundedness_metrics.record(
-            GroundednessSample(
-                rouge_l_f1=0.0,
-                citation_recall=0.0,
-                citation_precision=0.0,
-            )
-        )
-        return QaResponse(
-            query=body.query,
-            corpus_id=body.corpus_id,
-            answer=(
-                "I could not find relevant evidence in the picked wiki "
-                "directory for that question."
-            ),
-            overall_rouge_l_f1=0.0,
-            citation_recall=0.0,
-            citation_precision=0.0,
-            sentences=[],
-            hits=[],
-        )
-
-    evidence_blob = "\n\n--\n\n".join(
-        f"[{h.ref_id}] (source: {h.source_path}, score: {h.score:.3f})\n"
-        f"{evidence_map[h.ref_id]}"
-        for h in hits
-    )
-    prompt = (
-        "You are an OSS-maintainer assistant. Answer the question using "
-        "ONLY the evidence below. Cite every claim with a bracketed "
-        "[ref_id] matching one of the evidence entries. If the evidence "
-        "does not support a claim, refuse explicitly rather than guessing.\n\n"
-        f"Question: {body.query}\n\n## Evidence\n\n{evidence_blob}\n\n## Answer\n"
-    )
-
-    settings = get_settings()
-    adapter = make_adapter(settings)
-    try:
-        chat = adapter.chat([{"role": "user", "content": prompt}])
-        answer = (chat.content or "").strip()
     finally:
         adapter.close()
 
-    # 4. Per-sentence attribution via three published metrics.
-    #    - ROUGE-L F1 (Lin, 2004) — sentence ↔ cited-evidence overlap
-    #    - Citation Recall + Precision (Honovich et al., 2022)
-    scores = groundedness.groundedness_for_answer(answer, evidence_map)
-    overall_rouge_l = groundedness.answer_overall_rouge_l(scores)
-    cit_recall = groundedness.answer_citation_recall(scores)
-    cit_precision = groundedness.answer_citation_precision(scores)
     # Record one groundedness sample per call -- the dashboard's
     # "Accuracy / hallucination" panel aggregates these over the
     # trailing 200-call window so a reviewer can see whether the
     # model is drifting, not just what one turn did.
     groundedness_metrics.record(
         GroundednessSample(
-            rouge_l_f1=overall_rouge_l,
-            citation_recall=cit_recall,
-            citation_precision=cit_precision,
+            rouge_l_f1=turn.overall_rouge_l_f1,
+            citation_recall=turn.citation_recall,
+            citation_precision=turn.citation_precision,
         )
     )
-    duration_ms = int((_time.monotonic() - started) * 1000)
     log.info(
-        "wiki qa: principal=%s corpus_id=%s hits=%d sentences=%d "
-        "rouge_l=%.3f cite_recall=%.3f cite_prec=%.3f duration_ms=%d",
-        principal_id, body.corpus_id, len(hits), len(scores),
-        overall_rouge_l, cit_recall, cit_precision, duration_ms,
+        "wiki qa: principal=%s corpus_id=%s thread_id=%s hits=%d sentences=%d "
+        "rouge_l=%.3f cite_recall=%.3f cite_prec=%.3f",
+        principal_id, body.corpus_id, thread_id, len(turn.hits), len(turn.sentences),
+        turn.overall_rouge_l_f1, turn.citation_recall, turn.citation_precision,
     )
     return QaResponse(
         query=body.query,
         corpus_id=body.corpus_id,
-        answer=answer,
-        overall_rouge_l_f1=overall_rouge_l,
-        citation_recall=cit_recall,
-        citation_precision=cit_precision,
-        sentences=[SentenceScore(**s.to_dict()) for s in scores],
-        hits=[WikiHit(**h.to_dict()) for h in hits],
+        thread_id=thread_id,
+        answer=turn.answer,
+        overall_rouge_l_f1=turn.overall_rouge_l_f1,
+        citation_recall=turn.citation_recall,
+        citation_precision=turn.citation_precision,
+        sentences=[SentenceScore(**s) for s in turn.sentences],
+        hits=[WikiHit(**h) for h in turn.hits],
     )

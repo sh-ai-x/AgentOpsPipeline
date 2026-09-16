@@ -252,8 +252,8 @@ def test_qa_returns_per_sentence_groundedness(
         def chat(self, messages, **kwargs):
             class _Result:
                 content = (
-                    "PostgresSaver writes durable checkpoints. [ref] "
-                    "MongoDB clusters horizontally. [ref-bogus]"
+                    "PostgresSaver writes durable checkpoints. [1] "
+                    "MongoDB clusters horizontally. [2]"
                 )
             return _Result()
 
@@ -298,7 +298,8 @@ def test_qa_returns_per_sentence_groundedness(
     # Sentence 2: disjoint from evidence -> ROUGE-L F1 = 0.0.
     assert body["sentences"][1]["rouge_l_f1"] == pytest.approx(0.0, abs=0.01)
     # Sentence 2 also has an unresolved citation -> reflected in field.
-    assert "ref-bogus" in body["sentences"][1]["unresolved_refs"]
+    # [2] is out of range (only one hit, footnote [1], was retrieved).
+    assert "2" in body["sentences"][1]["unresolved_refs"]
     # Answer-level: three published metrics all surface.
     for field_name in ("overall_rouge_l_f1", "citation_recall", "citation_precision"):
         assert field_name in body, f"missing answer-level metric: {field_name}"

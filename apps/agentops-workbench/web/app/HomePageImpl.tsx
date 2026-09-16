@@ -37,6 +37,9 @@ type QaResponse = {
   query: string;
   corpus_id: string;
   answer: string;
+  // Echoed back so the client can rejoin the conversation on a
+  // follow-up turn. Server mints one if `body.thread_id` is None.
+  thread_id: string;
   overall_rouge_l_f1: number;
   citation_recall: number;
   citation_precision: number;
@@ -248,6 +251,10 @@ export default function HomePageImpl() {
   // QA state.
   const [qaQuery, setQaQuery] = useState("");
   const [qaResp, setQaResp] = useState<QaResponse | null>(null);
+  // Server-minted thread_id for multi-turn chat. Persisted across calls
+  // so a follow-up turn resumes the prior conversation by thread_id,
+  // not by retransmitting the transcript.
+  const [qaThreadId, setQaThreadId] = useState<string | null>(null);
 
   const authHeaders = useCallback(
     (): Record<string, string> => (bearer ? { Authorization: `Bearer ${bearer}` } : {}),
@@ -333,6 +340,7 @@ export default function HomePageImpl() {
       setIndexDurationMs(idx.duration_ms);
       setHits(null);
       setQaResp(null);
+      setQaThreadId(null);
     } catch (err) {
       const e = err as Error & { name?: string };
       if (e.name === "AbortError") {
@@ -377,7 +385,11 @@ export default function HomePageImpl() {
     if (!qaQuery.trim() || !bearer || !corpusId) return;
     setBusy(true);
     setError(null);
-    setQaResp(null);
+    // Multi-turn: keep the server-minted `thread_id` from the prior
+    // answer and send it back. The LangGraph checkpointer
+    // (`graph/wiki_chat.py`) restores the conversation `history`
+    // server-side for that thread_id; we never resend the transcript.
+    // Picking a new directory resets the conversation (no thread_id).
     try {
       const r = await fetch("/api/v1/wiki/qa", {
         method: "POST",
@@ -386,10 +398,13 @@ export default function HomePageImpl() {
           corpus_id: corpusId,
           query: qaQuery,
           top_k: topK,
+          ...(qaThreadId ? { thread_id: qaThreadId } : {}),
         }),
       });
       if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-      setQaResp((await r.json()) as QaResponse);
+      const data = (await r.json()) as QaResponse;
+      setQaResp(data);
+      setQaThreadId(data.thread_id);
     } catch (err) {
       setError((err as Error).message);
     } finally {
