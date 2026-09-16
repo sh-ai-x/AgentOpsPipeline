@@ -43,6 +43,14 @@ from .wiki_corpus import extract_citation_refs, split_sentences, tokenize
 # the sentence's token count and lower ROUGE-L artificially.
 _CITATION_STRIP_RE = re.compile(r"\[[A-Za-z0-9_.~-]+\]")
 
+# Strip the LLM's chain-of-thought block before evaluating facts.
+# MiniMax-M3 (and other reasoning models) emit `<think>...</think>`
+# inline; those tokens describe the model's planning, not the user's
+# answer, and would otherwise dilute every per-sentence faithfulness
+# score. Match the opening tag, any content (lazy, with re.DOTALL),
+# and the closing tag; missing either side passes through.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
 
 @dataclass(frozen=True)
 class GroundednessScore:
@@ -271,29 +279,41 @@ def groundedness_for_answer(
 
 
 def _strip_citations_for_support(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens with citation markers stripped.
+    """Lowercase alphanumeric tokens with citation markers and any
+    chain-of-thought block stripped.
 
     Same token pattern as the rest of the codebase
     (`_TOKEN_RE = re.compile(r"[a-z0-9]+")` in `wiki_corpus.tokenize`).
-    Citation markers like `[1]`, `[ref-a]` are removed before tokenizing
-    so a sentence like "Foo [1]." reduces to the same tokens as the
-    underlying claim "Foo.", letting the support check compare apples
-    to apples against the evidence text.
+    Citation markers like `[1]`, `[ref-a]` and a `<think>...</think>`
+    block (when present) are removed before tokenizing so a sentence
+    like "Foo [1]." reduces to the same tokens as the underlying
+    claim "Foo.", letting the support check compare apples to apples
+    against the evidence text.
     """
     from .wiki_corpus import tokenize as _tokenize
+    text = _THINK_BLOCK_RE.sub("", text)
     return _tokenize(_CITATION_STRIP_RE.sub("", text))
 
 
 def extract_atomic_facts(answer: str) -> list[str]:
     """Split `answer` into atomic facts (one per sentence) for
-    faithfulness evaluation. Citations are stripped so each fact is a
-    plain claim, not a claim + citation marker.
+    faithfulness evaluation. Citations and the LLM's chain-of-thought
+    block (when present) are stripped so each fact is a plain claim,
+    not a claim + citation marker or planning prose.
 
     Empty / whitespace input returns []. Each non-empty segment
     becomes one fact; the unit is a sentence (split via the existing
     `split_sentences` helper, which already handles abbreviations and
     citation-prefix re-attachment correctly)."""
-    raw = split_sentences(answer)
+    # Reasoning models (MiniMax-M3) emit their planning as a
+    # `<think>...</think>` block before the actual answer; that
+    # planning text describes the model's reasoning, not the user's
+    # answer, and including it in the denominator of the faithfulness
+    # metric would drag the per-turn score toward 0 on every turn
+    # where the model has any non-trivial planning. Strip the block
+    # first so each remaining fact is what the operator actually sees.
+    cleaned = _THINK_BLOCK_RE.sub("", answer)
+    raw = split_sentences(cleaned)
     # Strip inline `[N]` / `[ref-x]` / `[wiki__foo]` markers from each
     # fact so the support check compares claims to evidence, not
     # claims + citation metadata to evidence.
