@@ -726,13 +726,28 @@ Every search hit carries all five:
   with their per-term TF-IDF contribution. Lets a reviewer audit
   *why* a doc scored high without re-running the search.
 
-QA mode adds per-sentence `groundedness`: for each sentence in the
-LLM answer, find the `[ref_id]` citations, union the cited evidence,
-and compute the Jaccard overlap between the sentence's token set and
-the evidence's token set. `1.0` = every token in the sentence appears
-in cited evidence; `0.0` = none do. Per-sentence scores are rendered
-as colour-coded badges (green ≥ 0.6, amber 0.3–0.6, red < 0.3) so a
-reviewer can spot unsourced claims at a glance.
+QA mode adds three **published** attribution metrics:
+
+- **ROUGE-L F1** (Lin, 2004) — sentence ↔ cited-evidence overlap via
+  longest common subsequence. Per-sentence `rouge_l_f1`,
+  `rouge_l_precision`, `rouge_l_recall`, `lcs_length`; answer-level
+  `overall_rouge_l_f1` is the macro-average across sentences.
+- **Citation Recall** (Honovich et al., 2022, TRUE benchmark) —
+  fraction of sentences carrying ≥1 *resolved* citation. Independent
+  of evidence content; measures *whether* the LLM attributed.
+- **Citation Precision** (Honovich et al., 2022) — fraction of
+  emitted `[ref-id]` markers that resolve to a real evidence block.
+  Catches fabricated citations.
+
+Together they answer the three questions a reviewer asks:
+
+- "Did the LLM cite its claims?"   → Citation Recall
+- "Did the LLM cite real refs?"     → Citation Precision
+- "How closely do claims match evidence?" → ROUGE-L F1
+
+Per-sentence scores are rendered as colour-coded badges
+(green ≥ 0.6, amber 0.3–0.6, red < 0.3) so a reviewer can spot
+unsourced claims at a glance.
 
 ### Privacy
 
@@ -746,9 +761,11 @@ regression worse than the re-pick friction.
 ### Out of scope for this update
 
 - File System Access API polyfill for non-Chromium browsers.
-- NLI-based groundedness (TRUE / FACTS-Ground). The token-Jaccard
-  scorer is a documented proxy, sufficient to surface unsourced
-  sentences without claiming calibrated hallucination rates.
+- NLI-based groundedness (TRUE / FACTS-Ground) as a *replacement* for
+  the lexical ROUGE-L baseline. ROUGE-L F1 is the published lexical
+  metric with no dependency cost; an NLI model would add a heavy
+  transformer for incremental gain on this dataset size. Tracked
+  separately as a follow-up.
 - Multi-corpus queries (search across two picked directories at
   once). Single corpus per `corpus_id` keeps the LRU eviction story
   simple.

@@ -701,17 +701,23 @@ class SentenceScore(BaseModel):
     sentence: str
     cited_refs: list[str]
     unresolved_refs: list[str]
-    score: float
-    matched_tokens: int
+    # Three published metrics per sentence.
+    rouge_l_f1: float
+    rouge_l_precision: float
+    rouge_l_recall: float
     sentence_tokens: int
     evidence_tokens: int
+    lcs_length: int
 
 
 class QaResponse(BaseModel):
     query: str
     corpus_id: str
     answer: str
-    overall_groundedness: float
+    # Three answer-level published metrics.
+    overall_rouge_l_f1: float
+    citation_recall: float
+    citation_precision: float
     sentences: list[SentenceScore]
     hits: list[WikiHit]
 
@@ -788,11 +794,14 @@ def wiki_qa(
     body: QaBody,
     principal_id: str = Depends(require_principal),
 ) -> QaResponse:
-    """Search + LLM answer + per-sentence groundedness.
+    """Search + LLM answer + per-sentence groundedness via three
+    published metrics: ROUGE-L F1 (Lin, 2004), Citation Recall and
+    Citation Precision (Honovich et al., 2022).
 
     The LLM is prompted to ground every claim with a `[ref_id]`
-    citation. Each sentence is then scored by sentence-token recall
-    over the union of its cited evidence — the AC3 metric.
+    citation. Each sentence is then scored by ROUGE-L F1 over the
+    union of its cited evidence; per-sentence P/R are reported so a
+    reviewer can see *why* a sentence scored as it did.
     """
     import time as _time
 
@@ -826,7 +835,9 @@ def wiki_qa(
                 "I could not find relevant evidence in the picked wiki "
                 "directory for that question."
             ),
-            overall_groundedness=0.0,
+            overall_rouge_l_f1=0.0,
+            citation_recall=0.0,
+            citation_precision=0.0,
             sentences=[],
             hits=[],
         )
@@ -852,21 +863,27 @@ def wiki_qa(
     finally:
         adapter.close()
 
-    # 4. Per-sentence groundedness.
+    # 4. Per-sentence attribution via three published metrics.
+    #    - ROUGE-L F1 (Lin, 2004) — sentence ↔ cited-evidence overlap
+    #    - Citation Recall + Precision (Honovich et al., 2022)
     scores = groundedness.groundedness_for_answer(answer, evidence_map)
-    overall = groundedness.answer_overall_groundedness(scores)
+    overall_rouge_l = groundedness.answer_overall_rouge_l(scores)
+    cit_recall = groundedness.answer_citation_recall(scores)
+    cit_precision = groundedness.answer_citation_precision(scores)
     duration_ms = int((_time.monotonic() - started) * 1000)
     log.info(
         "wiki qa: principal=%s corpus_id=%s hits=%d sentences=%d "
-        "overall=%.3f duration_ms=%d",
-        principal_id, body.corpus_id, len(hits), len(scores), overall,
-        duration_ms,
+        "rouge_l=%.3f cite_recall=%.3f cite_prec=%.3f duration_ms=%d",
+        principal_id, body.corpus_id, len(hits), len(scores),
+        overall_rouge_l, cit_recall, cit_precision, duration_ms,
     )
     return QaResponse(
         query=body.query,
         corpus_id=body.corpus_id,
         answer=answer,
-        overall_groundedness=overall,
+        overall_rouge_l_f1=overall_rouge_l,
+        citation_recall=cit_recall,
+        citation_precision=cit_precision,
         sentences=[SentenceScore(**s.to_dict()) for s in scores],
         hits=[WikiHit(**h.to_dict()) for h in hits],
     )

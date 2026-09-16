@@ -216,7 +216,13 @@ def test_qa_requires_auth(client: TestClient) -> None:
 def test_qa_returns_per_sentence_groundedness(
     client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Patch the LLM adapter so we don't need a real provider."""
+    """Patch the LLM adapter so we don't need a real provider.
+
+    Verifies the API surfaces the three published metrics:
+      - per-sentence ROUGE-L F1 (Lin, 2004)
+      - answer-level overall_rouge_l_f1
+      - answer-level citation_recall + citation_precision (Honovich, 2022)
+    """
     # Index one doc whose evidence supports a fully-grounded claim.
     r = client.post(
         "/v1/wiki/index-files",
@@ -240,12 +246,14 @@ def test_qa_returns_per_sentence_groundedness(
     from agentops_workbench.api import server as server_mod
 
     # The corpus contains one file `ref.md` (flat file -> ref_id "ref").
+    # Sentence 1 fully matches the evidence; sentence 2 is disjoint and
+    # cites a fabricated ref so we can verify citation_precision < 1.
     class _StubAdapter:
         def chat(self, messages, **kwargs):
             class _Result:
                 content = (
                     "PostgresSaver writes durable checkpoints. [ref] "
-                    "MongoDB is unrelated. [ref]"
+                    "MongoDB clusters horizontally. [ref-bogus]"
                 )
             return _Result()
 
@@ -269,12 +277,37 @@ def test_qa_returns_per_sentence_groundedness(
     assert body["answer"]
     assert isinstance(body["sentences"], list)
     assert len(body["sentences"]) == 2
-    # The first sentence is fully grounded (every token in evidence).
-    assert body["sentences"][0]["score"] == pytest.approx(1.0, abs=0.01)
-    # The second sentence has zero overlap (mongodb not in evidence).
-    assert body["sentences"][1]["score"] == pytest.approx(0.0, abs=0.01)
-    # Overall = mean of the two.
-    assert 0.0 <= body["overall_groundedness"] <= 1.0
+    # Per-sentence: all three published metrics surface in the response.
+    for s in body["sentences"]:
+        for field_name in (
+            "rouge_l_f1",
+            "rouge_l_precision",
+            "rouge_l_recall",
+            "cited_refs",
+            "unresolved_refs",
+        ):
+            assert field_name in s, f"missing metric: {field_name}"
+    # Sentence 1: sentence tokens are a strict subsequence of evidence,
+    # so LCS == len(sentence) == 4. P = 4/4 = 1.0; R = 4/12 = 0.333;
+    # F1 = 2*P*R/(P+R) = 0.5. This is the standard ROUGE-L behaviour for a
+    # short sentence vs longer evidence — the harmonic mean penalises
+    # the unbalanced coverage even when every sentence token is present.
+    assert body["sentences"][0]["rouge_l_f1"] == pytest.approx(0.5, abs=0.01)
+    assert body["sentences"][0]["rouge_l_precision"] == pytest.approx(1.0, abs=0.01)
+    assert body["sentences"][0]["rouge_l_recall"] == pytest.approx(4 / 12, abs=0.01)
+    # Sentence 2: disjoint from evidence -> ROUGE-L F1 = 0.0.
+    assert body["sentences"][1]["rouge_l_f1"] == pytest.approx(0.0, abs=0.01)
+    # Sentence 2 also has an unresolved citation -> reflected in field.
+    assert "ref-bogus" in body["sentences"][1]["unresolved_refs"]
+    # Answer-level: three published metrics all surface.
+    for field_name in ("overall_rouge_l_f1", "citation_recall", "citation_precision"):
+        assert field_name in body, f"missing answer-level metric: {field_name}"
+    # Macro-average ROUGE-L F1 across the two sentences = (0.5 + 0.0) / 2.
+    assert body["overall_rouge_l_f1"] == pytest.approx(0.25, abs=0.01)
+    # Citation Recall: 1 of 2 sentences has a resolved citation -> 0.5.
+    assert body["citation_recall"] == pytest.approx(0.5, abs=0.01)
+    # Citation Precision: 1 valid (ref) + 1 invalid (ref-bogus) out of 2 -> 0.5.
+    assert body["citation_precision"] == pytest.approx(0.5, abs=0.01)
 
 
 def test_qa_returns_404_for_unknown_corpus(client: TestClient, bearer: dict) -> None:

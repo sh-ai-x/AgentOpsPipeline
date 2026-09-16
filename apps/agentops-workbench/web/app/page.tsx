@@ -19,17 +19,22 @@ type SentenceScore = {
   sentence: string;
   cited_refs: string[];
   unresolved_refs: string[];
-  score: number;
-  matched_tokens: number;
+  // Three published metrics per sentence (Lin 2004 + Honovich 2022).
+  rouge_l_f1: number;
+  rouge_l_precision: number;
+  rouge_l_recall: number;
   sentence_tokens: number;
   evidence_tokens: number;
+  lcs_length: number;
 };
 
 type QaResponse = {
   query: string;
   corpus_id: string;
   answer: string;
-  overall_groundedness: number;
+  overall_rouge_l_f1: number;
+  citation_recall: number;
+  citation_precision: number;
   sentences: SentenceScore[];
   hits: Hit[];
 };
@@ -367,8 +372,31 @@ export default function HomePage() {
 
             {qaResp && (
               <div className="qa">
-                <p className="overall" style={{ color: groundednessColor(qaResp.overall_groundedness) }}>
-                  Overall groundedness: <strong>{(qaResp.overall_groundedness * 100).toFixed(0)}%</strong>
+                <p className="overall">
+                  <strong>ROUGE-L F1</strong>
+                  <span
+                    className="badge"
+                    style={{ backgroundColor: groundednessColor(qaResp.overall_rouge_l_f1) }}
+                  >
+                    {(qaResp.overall_rouge_l_f1 * 100).toFixed(0)}%
+                  </span>
+                  <strong style={{ marginLeft: 16 }}>Citation Recall</strong>
+                  <span
+                    className="badge"
+                    style={{ backgroundColor: groundednessColor(qaResp.citation_recall) }}
+                  >
+                    {(qaResp.citation_recall * 100).toFixed(0)}%
+                  </span>
+                  <strong style={{ marginLeft: 16 }}>Citation Precision</strong>
+                  <span
+                    className="badge"
+                    style={{ backgroundColor: groundednessColor(qaResp.citation_precision) }}
+                  >
+                    {(qaResp.citation_precision * 100).toFixed(0)}%
+                  </span>
+                </p>
+                <p className="muted" style={{ marginTop: -8 }}>
+                  ROUGE-L F1 (Lin 2004): sentence ↔ cited evidence overlap. Citation Recall + Precision (Honovich 2022): are claims cited, and are the citations real?
                 </p>
                 <div className="answer">{qaResp.answer}</div>
 
@@ -377,17 +405,20 @@ export default function HomePage() {
                   <div
                     key={i}
                     className="sentence"
-                    style={{ borderLeft: `4px solid ${groundednessColor(s.score)}` }}
+                    style={{ borderLeft: `4px solid ${groundednessColor(s.rouge_l_f1)}` }}
                   >
                     <div className="sentence-header">
                       <span
                         className="badge"
-                        style={{ backgroundColor: groundednessColor(s.score) }}
+                        style={{ backgroundColor: groundednessColor(s.rouge_l_f1) }}
                       >
-                        {(s.score * 100).toFixed(0)}%
+                        ROUGE-L F1 {(s.rouge_l_f1 * 100).toFixed(0)}%
                       </span>
                       <span className="muted">
-                        {s.matched_tokens}/{s.sentence_tokens} tokens grounded
+                        P={(s.rouge_l_precision * 100).toFixed(0)}% R={(s.rouge_l_recall * 100).toFixed(0)}%
+                      </span>
+                      <span className="muted">
+                        LCS={s.lcs_length}/{s.sentence_tokens} tokens
                       </span>
                       {s.cited_refs.length > 0 && (
                         <span className="muted">
