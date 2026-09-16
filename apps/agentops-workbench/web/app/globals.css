@@ -121,7 +121,6 @@ button:disabled {
 
 .metric {
   display: inline-block;
-  margin-right: 12px;
 }
 
 .hit {
@@ -146,9 +145,17 @@ button:disabled {
 }
 
 .hit-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
   font-size: 12px;
   color: var(--text-muted);
   margin-bottom: 8px;
+}
+
+.metric-sep {
+  color: var(--border);
 }
 
 .hit-meta a {
@@ -229,4 +236,73 @@ button:disabled {
 code {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 0.9em;
+}
+
+.metrics-guide {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 12px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.metrics-guide summary {
+  cursor: pointer;
+  padding: 8px 0;
+  color: var(--accent);
+  font-weight: 500;
+  list-style: none;
+}
+
+.metrics-guide summary::-webkit-details-marker {
+  display: none;
+}
+
+.metrics-guide summary::before {
+  content: "▸ ";
+}
+
+.metrics-guide[open] summary::before {
+  content: "▾ ";
+}
+
+.metrics-guide dl {
+  margin: 4px 0 8px;
+}
+
+.metrics-guide-row {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.metrics-guide-row:first-child {
+  border-top: none;
+}
+
+.metrics-guide dt {
+  font-weight: 600;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  margin-bottom: 2px;
+}
+
+.metrics-guide dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.metrics-guide-why {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.metrics-guide-note {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
 }

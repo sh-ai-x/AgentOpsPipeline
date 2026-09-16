@@ -142,6 +142,87 @@ function groundednessColor(score: number): string {
   return "#dc2626";
 }
 
+// Reference copy for the two metric families this page shows. Kept as
+// data (not scattered prose) so "search" and "qa" can render the same
+// entries consistently and so the numbers are never explained differently
+// in two places.
+const METRIC_DOCS: Record<
+  "search" | "qa",
+  { label: string; meaning: string; why: string }[]
+> = {
+  search: [
+    {
+      label: "score",
+      meaning:
+        "TF-IDF-weighted cosine similarity between your query and this document, 0–1. Higher = more relevant.",
+      why:
+        "TF-IDF + cosine is a standard, well-understood retrieval technique — not a bespoke heuristic — so it needs no embedding service and the number means the same thing anyone else measuring TF-IDF similarity would get.",
+    },
+    {
+      label: "coverage",
+      meaning:
+        "% of the distinct words in your query that were actually found in this document (matched terms ÷ total query terms).",
+      why:
+        "score can be high from a few heavily-weighted rare terms even if most of your question isn't in the document. coverage is the plain-English check on that: it tells you how much of what you literally typed the document touches.",
+    },
+    {
+      label: "terms",
+      meaning:
+        "The words in this document that contributed the most to its score — i.e. why it surfaced.",
+      why: "Lets you sanity-check a match without opening the source file.",
+    },
+  ],
+  qa: [
+    {
+      label: "ROUGE-L F1",
+      meaning:
+        "Overlap between an answer sentence and its cited evidence, via the Longest Common Subsequence (LCS) of tokens (Lin, 2004). Precision = LCS ÷ sentence tokens, Recall = LCS ÷ evidence tokens.",
+      why:
+        "The standard published metric for summary/answer-vs-source overlap — it rewards matching word order, not just shared vocabulary — used instead of a custom string-similarity function so the score means something outside this app.",
+    },
+    {
+      label: "Citation Recall",
+      meaning:
+        "Fraction of answer sentences that carry at least one citation resolving to real evidence.",
+      why:
+        "Answers \"did the LLM even try to attribute its claims?\" (Honovich et al., 2022 — TRUE).",
+    },
+    {
+      label: "Citation Precision",
+      meaning:
+        "Fraction of the [ref-x] markers the LLM emitted that actually point to real evidence, vs. fabricated.",
+      why:
+        "Answers \"can you trust the citations it gave you?\" (Honovich et al., 2022 — TRUE). Recall and Precision are independent: an answer can cite everything (100% recall) while citing the wrong thing (low precision).",
+    },
+  ],
+};
+
+function MetricsGuide({ topic }: { topic: "search" | "qa" }) {
+  return (
+    <details className="metrics-guide">
+      <summary>What do these numbers mean?</summary>
+      <dl>
+        {METRIC_DOCS[topic].map((m) => (
+          <div className="metrics-guide-row" key={m.label}>
+            <dt>{m.label}</dt>
+            <dd>
+              {m.meaning}
+              <span className="metrics-guide-why">Why this metric: {m.why}</span>
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {topic === "qa" && (
+        <p className="metrics-guide-note">
+          All three at 0% usually means the LLM found no supporting evidence
+          and explicitly refused to answer rather than guess — that's the
+          safe outcome the prompt asks for, not a broken search.
+        </p>
+      )}
+    </details>
+  );
+}
+
 export default function HomePageImpl() {
   const [bearer, setBearer] = useState("");
   const [busy, setBusy] = useState(false);
@@ -357,6 +438,7 @@ export default function HomePageImpl() {
         <>
           <section className="card">
             <h2>2. Search</h2>
+            <MetricsGuide topic="search" />
             <form onSubmit={onSearch} className="search-row">
               <input
                 placeholder="search query (e.g. 'langgraph checkpointing')"
@@ -391,12 +473,14 @@ export default function HomePageImpl() {
                   <span className="metric">
                     score <strong>{h.score.toFixed(3)}</strong>
                   </span>
+                  <span className="metric-sep">·</span>
                   <span
                     className="metric"
                     style={{ color: groundednessColor(h.coverage) }}
                   >
                     coverage <strong>{(h.coverage * 100).toFixed(0)}%</strong>
                   </span>
+                  <span className="metric-sep">·</span>
                   <span className="metric muted">
                     mtime {new Date(h.mtime).toISOString().slice(0, 19)}
                   </span>
@@ -413,6 +497,7 @@ export default function HomePageImpl() {
 
           <section className="card">
             <h2>3. Ask with groundedness</h2>
+            <MetricsGuide topic="qa" />
             <form onSubmit={onAsk} className="search-row">
               <input
                 placeholder="ask a question (the LLM will cite each claim)"
@@ -468,10 +553,10 @@ export default function HomePageImpl() {
                       >
                         ROUGE-L F1 {(s.rouge_l_f1 * 100).toFixed(0)}%
                       </span>
-                      <span className="muted">
-                        P={(s.rouge_l_precision * 100).toFixed(0)}% R={(s.rouge_l_recall * 100).toFixed(0)}%
+                      <span className="muted" title="Precision = LCS ÷ sentence tokens. Recall = LCS ÷ evidence tokens.">
+                        P={(s.rouge_l_precision * 100).toFixed(0)}% · R={(s.rouge_l_recall * 100).toFixed(0)}%
                       </span>
-                      <span className="muted">
+                      <span className="muted" title="Longest Common Subsequence length, out of the sentence's own token count.">
                         LCS={s.lcs_length}/{s.sentence_tokens} tokens
                       </span>
                       {s.cited_refs.length > 0 && (
