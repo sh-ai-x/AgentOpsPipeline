@@ -102,7 +102,7 @@ export default function MetricsPanel({ bearer }: { bearer: string }) {
       cancelled = true;
       window.clearInterval(handle);
     };
-  }, [interval]);
+  }, [interval, bearer]);
 
   return (
     <section className="card">
