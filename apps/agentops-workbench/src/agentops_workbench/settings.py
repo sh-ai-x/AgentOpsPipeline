@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     # Auth: principal for local dev
     dev_principal_id: str = "dev-user"
 
+    # Dev-mode auto-mint: when True AND provider=local-fake, the API
+    # exposes GET /v1/auth/dev-token that mints a fresh JWT on demand
+    # so the web UI (and Streamlit) can authenticate without a
+    # hand-pasted bearer. Production deployments leave this False
+    # (default) and route JWTs through an ID provider (Auth0/Cognito/etc).
+    allow_dev_token: bool = False
+
     def resolved_corpus(self, override: str | None = None) -> tuple[str, bool]:
         """Resolve the (corpus_dir, wiki_mode) tuple for a single run.
 

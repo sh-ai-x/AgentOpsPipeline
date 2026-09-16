@@ -340,6 +340,74 @@ def cancel_run(run_id: str, principal_id: str = Depends(require_principal)) -> C
     return CancelResult(id=run_id, state=RunState.CANCELLED.value)
 
 
+# ---- Dev-mode auto-mint (Phase 9 UX fix) ----
+#
+# Without this, every request to the web UI has to carry a hand-pasted
+# JWT — an awful UX for local dev. Streamlit already has the same
+# capability gated by AGENTOPS_ALLOW_DEV_TOKEN=1; the web UI needs
+# the equivalent.
+#
+# Gate: this endpoint is ONLY served when
+#   provider == "local-fake"   (the offline fake provider)
+# AND settings.allow_dev_token is True (operator opt-in via env).
+# Production deployments with a real LLM and a real ID provider
+# never expose this — the auth path is `require_principal`.
+
+
+class DevTokenResponse(BaseModel):
+    token: str
+    principal_id: str
+    expires_in: int
+
+
+def _dev_token_allowed() -> bool:
+    """Return True iff GET /v1/auth/dev-token should be served."""
+    try:
+        settings = get_settings()
+    except Exception:  # noqa: BLE001 - dev-only probe
+        return False
+    return settings.provider == "local-fake" and settings.allow_dev_token
+
+
+@app.get("/v1/auth/dev-token", response_model=DevTokenResponse)
+def dev_token(principal_id: str = "dev-user") -> DevTokenResponse:
+    """Mint a fresh JWT for `principal_id`. Dev-only.
+
+    Disabled by default. Enable with `AGENTOPS_ALLOW_DEV_TOKEN=1` AND
+    `AGENTOPS_PROVIDER=local-fake` (the latter is the dev default).
+    A real deployment with `provider=minimax|openai|anthropic` will
+    get a 403 even if the env var is set — prevents accidentally
+    shipping dev-mode auth to prod.
+    """
+    if not _dev_token_allowed():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "/v1/auth/dev-token is dev-only. Set provider=local-fake "
+                "and AGENTOPS_ALLOW_DEV_TOKEN=1 to enable."
+            ),
+        )
+    settings = get_settings()
+    pid = principal_id.strip() or settings.dev_principal_id
+    tok = issue_token(pid, settings)
+    return DevTokenResponse(
+        token=tok,
+        principal_id=pid,
+        expires_in=settings.jwt_expiry_seconds,
+    )
+
+
+@app.get("/v1/auth/dev-mode", response_model=dict)
+def dev_mode() -> dict:
+    """Report whether dev-mode auto-mint is on, so the web UI can
+    know to skip the manual Bearer field."""
+    return {
+        "enabled": _dev_token_allowed(),
+        "provider": get_settings().provider,
+        "default_principal": get_settings().dev_principal_id,
+    }
+
+
 @app.post("/v1/actions", response_model=ApproveResult, status_code=status.HTTP_201_CREATED)
 def create_action(body: ApproveBody, run_id: str, principal_id: str = Depends(require_principal)) -> ApproveResult:
     """Create a pending action record (bound nonce + expiry)."""

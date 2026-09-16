@@ -317,3 +317,84 @@ def test_qa_returns_404_for_unknown_corpus(client: TestClient, bearer: dict) -> 
         headers=bearer,
     )
     assert r.status_code == 404
+
+
+# ---- Dev-mode auto-mint (Phase 9 UX) ----
+
+
+@pytest.fixture
+def dev_mode_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Enable AGENTOPS_ALLOW_DEV_TOKEN=1 and reset the settings cache."""
+    monkeypatch.setenv("AGENTOPS_ALLOW_DEV_TOKEN", "1")
+    monkeypatch.setenv("AGENTOPS_PROVIDER", "local-fake")
+    import agentops_workbench.settings as _settings
+    _settings._settings = None
+    yield
+    _settings._settings = None
+
+
+@pytest.fixture
+def dev_mode_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure AGENTOPS_ALLOW_DEV_TOKEN=0 and reset the settings cache."""
+    monkeypatch.setenv("AGENTOPS_ALLOW_DEV_TOKEN", "0")
+    monkeypatch.setenv("AGENTOPS_PROVIDER", "local-fake")
+    import agentops_workbench.settings as _settings
+    _settings._settings = None
+    yield
+    _settings._settings = None
+
+
+def test_dev_mode_status_reports_enabled(
+    client: TestClient, dev_mode_on: None
+) -> None:
+    r = client.get("/v1/auth/dev-mode")
+    assert r.status_code == 200
+    assert r.json()["enabled"] is True
+    assert r.json()["provider"] == "local-fake"
+
+
+def test_dev_mode_status_reports_disabled_by_default(
+    client: TestClient,
+) -> None:
+    """With AGENTOPS_ALLOW_DEV_TOKEN unset, dev-mode is off and the
+    endpoint reports it."""
+    import agentops_workbench.settings as _settings
+    _settings._settings = None  # ensure fresh read
+    r = client.get("/v1/auth/dev-mode")
+    assert r.status_code == 200
+    assert r.json()["enabled"] is False
+
+
+def test_dev_token_endpoint_returns_jwt_when_enabled(
+    client: TestClient, dev_mode_on: None
+) -> None:
+    r = client.get("/v1/auth/dev-token", params={"principal_id": "reviewer"})
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body["token"], str) and len(body["token"]) > 50
+    assert body["principal_id"] == "reviewer"
+    assert body["expires_in"] > 0
+    # Token must actually authenticate. Use /v1/wiki/index-files with
+    # an empty body — auth is the gate we want to verify, the 200 is
+    # the success path (corpus_id for an empty corpus).
+    r2 = client.post(
+        "/v1/wiki/index-files",
+        json={"files": []},
+        headers={"Authorization": f"Bearer {body['token']}"},
+    )
+    assert r2.status_code == 200, r2.text
+
+
+def test_dev_token_endpoint_refuses_when_disabled(
+    client: TestClient, dev_mode_off: None
+) -> None:
+    r = client.get("/v1/auth/dev-token", params={"principal_id": "reviewer"})
+    assert r.status_code == 403
+
+
+def test_dev_token_uses_default_principal_when_blank(
+    client: TestClient, dev_mode_on: None
+) -> None:
+    r = client.get("/v1/auth/dev-token", params={"principal_id": "  "})
+    assert r.status_code == 200
+    assert r.json()["principal_id"] == "dev-user"
