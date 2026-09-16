@@ -32,6 +32,14 @@
 > (proposal §"Update 2 (2026-09-13)",
 > [ADR-0008](../apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md))
 > and is **not started**.
+>
+> **Amended 2026-09-16.** A new **Phase 9** adds a browser-native
+> directory picker (File System Access API) that uploads `.md` files to
+> a per-`corpus_id` `WikiRagAdapter` on the server, and surfaces
+> source path + evidence span + score + coverage + contributing terms +
+> mtime for every result, plus per-sentence groundedness in QA mode.
+> Planned in [`09-wiki-browser-picker/index.md`](09-wiki-browser-picker/index.md)
+> and proposal §"Update 3".
 
 ## Phases
 
@@ -46,6 +54,7 @@
 | 6 | [06-held-out-portfolio](06-held-out-portfolio/) | Held-out evaluation + evidence card + demo | `step7.md` | 1.0 | A reviewer can reproduce an offline failure and inspect the basis for the shipping decision |
 | 7 | [07-adapter-pattern-pivot](07-adapter-pattern-pivot/) | Evidence-source adapter generalization + OSS-maintainer pillars | *(no `.dev-kit` step plan — post-pivot, planned in the proposal)* | 2.0 | A run against a GitHub issue returns a draft whose every citation resolves to an `EvidenceRef` from a registered adapter, with the docs-corpus suite passing unchanged and `retrieval_recall` reported per `source_kind` |
 | 8 | [08-deployable-mvp](08-deployable-mvp/) | One flagship GitHub-URL CLI flow + deployable backend | *(no `.dev-kit` step plan — planned in the proposal §"Update 2")* | not yet sized | A reviewer runs `agentops-oss-helper <public-repo-url> --issue N` and gets a grounded answer with zero manual setup beyond one token env var; the backend passes a scripted `/v1/runs` smoke test with Streamlit absent from the environment |
+| 9 | [09-wiki-browser-picker](09-wiki-browser-picker/) | Browser-native directory picker → LangGraph wire → trust indicators in the web UI | *(no `.dev-kit` step plan — planned in the proposal §"Update 3")* | 1.5 | AC1: web UI shows native OS picker on click and the picked directory becomes agent-accessible without any server-side mount; AC2: search results route through the existing `WikiRagAdapter` / `build_document_client` path used by all three topologies; AC3: every result shows source path, evidence span, score, coverage, contributing terms, mtime, and QA mode returns per-sentence groundedness |
 
 Phase numbers are 0-indexed (they match the proposal); the step-plan files are
 1-indexed (`step1.md` = Phase 0). Estimates are the original plan values, not

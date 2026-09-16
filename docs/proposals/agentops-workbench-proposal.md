@@ -671,6 +671,91 @@ labels, no PRs — read-only against GitHub), no private-repository support
 in the flagship flow, and no autoscaling, multi-region or Kubernetes story.
 See [ADR-0008](../../apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md).
 
+## Update 3 (2026-09-16): Browser-native wiki picker
+
+> Adds a third delivery surface for the wiki evidence-source path: a
+> reviewer running locally (or a deployment on a host with no persistent
+> filesystem) can point the agent at their **own** `.md` directory via a
+> browser-native picker, with no `docker compose up`, no `AGENTOPS_WIKI_DIR`
+> env var, and no manual copy.
+
+### Why now
+
+Two audiences couldn't use the existing wiki integration:
+
+1. **Reviewers on their laptops** — they have an Obsidian vault or a
+   `~/dev/mywiki` directory, but `AGENTOPS_WIKI_DIR` is a server-side
+   path. Asking them to copy the corpus into a docker-mounted volume
+   breaks the "open the URL and try it" flow.
+2. **Browser-only deployments** (Vercel, Cloudflare Pages) — no
+   filesystem at all. The only way to make these useful for personal-wiki
+   workflows is for the **browser** to supply the files via the File
+   System Access API.
+
+### What this update adds
+
+1. **`POST /v1/wiki/index-files`** — multipart endpoint. The browser
+   reads each `.md` file under the user-picked directory via
+   `window.showDirectoryPicker()` (Chromium-only; Firefox/Safari
+   intentionally not polyfilled — `webkitdirectory` `<input>` loses the
+   recursive walk and the per-file metadata we need) and POSTs
+   `{path, content, mtime}` for each. The server writes to a temp dir,
+   indexes with the existing `WikiRagAdapter` (after the recursive walk
+   + junk-dir skip upgrade shipped earlier in this update), and returns
+   a `corpus_id`.
+2. **`GET /v1/wiki/search?corpus_id=&q=`** — search scoped to that
+   corpus. Returns the existing `EvidenceRef` shape **plus** the
+   provenance + trust fields defined below.
+3. **`POST /v1/wiki/qa`** — same search, plus an LLM answer with
+   per-sentence groundedness scoring.
+
+### Trust indicators (mandated, not optional)
+
+Every search hit carries all five:
+
+- `source_path` — the **exact** file path inside the picked directory
+  (the user's own filesystem, not a server-side alias).
+- `evidence_span` — the substring containing the matching query terms,
+  with character-offset pairs ready for a `<mark>` overlay.
+- `score` — TF-IDF cosine similarity, exactly what `WikiRagAdapter`
+  already computes.
+- `coverage` — `matched_query_terms / total_query_terms`, 0..1. A
+  hit at `coverage=1.0` matched every query term; `coverage=0.25`
+  means only a quarter of the query terms landed in this doc.
+- `contributing_terms` — top-k terms that pushed this hit's score,
+  with their per-term TF-IDF contribution. Lets a reviewer audit
+  *why* a doc scored high without re-running the search.
+
+QA mode adds per-sentence `groundedness`: for each sentence in the
+LLM answer, find the `[ref_id]` citations, union the cited evidence,
+and compute the Jaccard overlap between the sentence's token set and
+the evidence's token set. `1.0` = every token in the sentence appears
+in cited evidence; `0.0` = none do. Per-sentence scores are rendered
+as colour-coded badges (green ≥ 0.6, amber 0.3–0.6, red < 0.3) so a
+reviewer can spot unsourced claims at a glance.
+
+### Privacy
+
+`corpus_id` is process-local. The browser must re-pick after each
+server restart. The server **never** persists uploaded file contents
+to disk beyond the in-memory `WikiRagAdapter`'s TF-IDF vectors and
+the `corpus_id → temp-dir` mapping, both of which are wiped at
+process exit. Persisting user files to server disk would be a privacy
+regression worse than the re-pick friction.
+
+### Out of scope for this update
+
+- File System Access API polyfill for non-Chromium browsers.
+- NLI-based groundedness (TRUE / FACTS-Ground). The token-Jaccard
+  scorer is a documented proxy, sufficient to surface unsourced
+  sentences without claiming calibrated hallucination rates.
+- Multi-corpus queries (search across two picked directories at
+  once). Single corpus per `corpus_id` keeps the LRU eviction story
+  simple.
+
+See [`phases/09-wiki-browser-picker/index.md`](../../phases/09-wiki-browser-picker/index.md)
+for the per-step build plan and the core tests that gate the ACs.
+
 ## User Story and Scope
 
 An engineering support user submits a repository issue. The system retrieves versioned documentation, asks for clarification when necessary, proposes a supported answer and optionally creates a ticket draft. Publishing occurs only to a local mock ticket service after server-validated approval.

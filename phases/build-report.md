@@ -29,6 +29,17 @@
 > runner fix** ([PR #27](https://github.com/sh-ai-x/AgentOpsPipeline/pull/27))
 > ships the benchmark code change but the **held-out re-run itself is still
 > pending** — needs `provider=minimax` to actually score.
+>
+> **Update 2026-09-16 (Phase 9):** WikiRagAdapter switched from a
+> flat `glob("*.md")` to a recursive `collect_wiki_files()` walk with
+> junk-dir skipping (`SKIP_DIR_NAMES`), so arbitrary layouts (flat
+> `~/dev/mywiki`, Obsidian nested `wiki/<domain>/<slug>.md`,
+> `.metagraph/`, `.worktrees/`-bearing vaults) all index the same way.
+> See [`09-wiki-browser-picker/`](09-wiki-browser-picker/index.md) for
+> the full Phase 9 plan — browser-side File System Access API picker,
+> `WikiCorpusRegistry` keyed by `corpus_id`, three new endpoints
+> (`POST /v1/wiki/index-files`, `GET /v1/wiki/search`,
+> `POST /v1/wiki/qa`), and per-sentence groundedness scoring.
 
 ## Per-step verdict (refreshed 2026-09-15)
 
