@@ -1,25 +1,20 @@
-"""agentops-oss-helper flow -- flagship demo of the OSS-maintainer pivot.
+"""agentops-oss-helper flow -- OSS maintainer helper, docs-only.
 
-Given a public GitHub repo URL (and optionally an issue number or a free-
-text question), produce a grounded triage / answer draft that cites the
-repo's own docs/README AND its own Issues/PRs as evidence. This is the
-concretization of phases/08-deployable-mvp/index.md and ADR-0008.
+Given a public GitHub repo URL (and optionally a free-text question),
+fetch the repo's own docs/README via `git sparse-checkout` (or
+`codeload.github.com` tarball), build a TF-IDF corpus, and answer the
+question grounded in those docs with explicit citations.
 
-Acquisition is split, forced by two algorithm/contract facts:
+This is the concretization of phases/08-deployable-mvp/index.md and
+ADR-0008 -- with the GitHub issues/PRs source removed per operator
+direction 2026-09-14. The flow remains a useful demo of the
+EvidenceSourceAdapter pattern: same Protocol shape as
+GitHubIssueAdapter (now removed), different corpus, no network
+permission dependency.
 
-1. **Docs acquired in bulk** via `git clone --depth 1 --filter=blob:none
-   --sparse` (when `git` is available on the host) or a `codeload.github.com`
-   tarball (when it isn't, e.g. a container image without `git`). Bulk is
-   forced by WikiRagAdapter's TF-IDF: its `__init__` builds a corpus-wide
-   IDF table before any query runs, and per-query Contents-API fetches
-   can't produce that.
-2. **Issues/PRs acquired via the GitHub REST API** via the existing
-   GitHubIssueAdapter (real `httpx` calls, `pytest-httpx`-mocked in
-   tests). Issues aren't in the git tree.
-
-The result is a structured triage result (not a streaming LLM
-response): answer text, top evidence refs from each source with
-citations, raw per-source counts, and any acquisition warnings.
+Acquisition forced by WikiRagAdapter's TF-IDF: its `__init__` builds
+a corpus-wide IDF table before any query runs. Per-query Contents-API
+fetches can't produce that, so docs must be bulk-fetched.
 """
 from __future__ import annotations
 
@@ -34,7 +29,6 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .adapters.github_issue import GitHubIssueAdapter
 from .adapters.wiki_rag import WikiRagAdapter
 from .llm.adapter import LLMAdapter
 
@@ -50,6 +44,7 @@ DEFAULT_DOC_ROOTS: tuple[str, ...] = (
     "docs",
     "doc",
     "documentation",
+    "hooks",
     "CONTRIBUTING.md",
 )
 
@@ -58,34 +53,30 @@ DEFAULT_DOC_ROOTS: tuple[str, ...] = (
 class TriageResult:
     owner: str
     repo: str
-    issue_number: int | None
     question: str | None
     answer: str
     wiki_refs: list[dict]      # [{ref_id, title, score, source_kind, retrieved_at}]
-    issue_refs: list[dict]    # same shape
     warnings: list[str] = field(default_factory=list)
     duration_ms: int = 0
 
 
-def parse_repo_url(url: str) -> tuple[str, str, int | None]:
-    """Accept `https://github.com/<owner>/<repo>` with or without `.git`,
-    a trailing slash, or a trailing `/issues/<N>` (in which case <N> is
-    taken as the issue number, returned in the third tuple slot).
+def parse_repo_url(url: str) -> tuple[str, str]:
+    """Accept `https://github.com/<owner>/<repo>` with or without `.git`
+    or a trailing slash.
 
-    Returns (owner, repo, issue_number_or_None). Raises ValueError on
-    anything else.
+    Returns (owner, repo). Raises ValueError on anything else (including
+    GitLab / Bitbucket URLs -- this flow is GitHub-specific because it
+    uses `codeload.github.com` and the git+sparse-checkout shape).
     """
     m = re.match(
-        r"^https?://github\.com/([\w.\-]+)/([\w.\-]+?)(?:\.git)?/?(?:/issues/(\d+))?/?$",
+        r"^https?://github\.com/([\w.\-]+)/([\w.\-]+?)(?:\.git)?/?$",
         url.strip(),
     )
     if not m:
         raise ValueError(
             f"not a github URL of the form https://github.com/<owner>/<repo>: {url!r}"
         )
-    owner, repo = m.group(1), m.group(2)
-    issue = int(m.group(3)) if m.group(3) else None
-    return owner, repo, issue
+    return m.group(1), m.group(2)
 
 
 def bulk_acquire_repo_docs(
@@ -206,7 +197,10 @@ def _acquire_via_codeload(
         tmp_tar = work / "repo.tgz"
         tmp_tar.write_bytes(resp.read())
     with tarfile.open(tmp_tar, "r:gz") as tf:
-        prefix_root = next((m.name.split("/")[0] for m in tf.getmembers() if m.isdir()), None)
+        members = tf.getmembers()
+        prefix_root = next(
+            (m.name.split("/")[0] for m in members if m.isdir()), None
+        )
         tf.extractall(work)
     extracted = work / (prefix_root or "")
     flat = work / "_flat"
@@ -236,15 +230,15 @@ def _flatten_one(path: Path, dest_dir: Path, source_root: Path) -> None:
     except ValueError:
         rel = Path(path.name)
     flat_stem = str(rel).replace("/", "__").replace("\\", "__")
-    (dest_dir / flat_stem).write_text(path.read_text(encoding="utf-8", errors="replace"))
+    (dest_dir / flat_stem).write_text(
+        path.read_text(encoding="utf-8", errors="replace")
+    )
 
 
 def run_oss_helper(
     repo_url: str,
     *,
     question: str | None = None,
-    issue_number: int | None = None,
-    github_token: str | None = None,
     wiki_dir_cap: int = 4096,        # max flattened doc files; default = sane bound
     timeout_s: float = 30.0,
     adapter: LLMAdapter | None = None,   # injected for tests; real calls pass the default
@@ -252,22 +246,19 @@ def run_oss_helper(
     """Run the flagship flow end-to-end and return a structured TriageResult.
 
     Sequence:
-      1. Parse repo URL, derive owner/repo/[issue]
+      1. Parse repo URL, derive owner/repo
       2. Bulk-acquire docs into a temp dir, construct WikiRagAdapter
-      3. Construct GitHubIssueAdapter (read-only, no mutations)
-      4. Optionally fetch the named issue
-      5. Compose an answer prompt from the assembled evidence
-      6. Call the LLM via `adapter.chat`
-      7. Return TriageResult with answer + per-source evidence refs
+      3. Compose the answer prompt from the assembled evidence
+      4. Call the LLM via `adapter.chat`
+      5. Return TriageResult with answer + wiki evidence refs
 
     The LLM is asked to ground every claim in the assembled evidence;
     if no relevant evidence is found for any part of the question, it
-    should refuse (per ADR-0008's "explicit refusal when evidence does
-    not support one").
+    should refuse (per ADR-0008 / phase 8 exit criterion 2: visible
+    failure modes for a triage tool).
     """
     started = time.monotonic()
-    owner, repo, parsed_issue = parse_repo_url(repo_url)
-    issue = issue_number if issue_number is not None else parsed_issue
+    owner, repo = parse_repo_url(repo_url)
     warnings: list[str] = []
 
     work, acq_warnings = bulk_acquire_repo_docs(
@@ -275,23 +266,9 @@ def run_oss_helper(
     )
     warnings.extend(acq_warnings)
 
-    # Construct the two adapters.
+    # Construct the docs adapter.
     wiki = WikiRagAdapter(wiki_dir=str(work))
-    issue_adapter = GitHubIssueAdapter(owner=owner, repo=repo, token=github_token)
-
-    # Search both sources for the issue title (or question). Per-source
-    # top-k; never merge-ranked across adapters (different scoring
-    # distributions).
     query = question or ""
-    if issue is not None:
-        try:
-            issue_body = issue_adapter.read_evidence(ref_id=str(issue))
-            query = (query + "\n\nIssue #" + str(issue) + ":\n" + issue_body).strip()
-        except Exception as exc:  # noqa: BLE001 -- surfaced as warning
-            warnings.append(f"could not fetch issue #{issue}: {exc!r}")
-
-    wiki_evs = wiki.search_evidence(query, top_k=5) if query else []
-    issue_evs = issue_adapter.search_evidence(query, top_k=5) if query else []
 
     # Cap the flattened docs folder -- WikiRagAdapter's TF-IDF is a linear
     # scan over every document per query, inappropriate at scale. A
@@ -308,31 +285,28 @@ def run_oss_helper(
     except Exception:  # noqa: BLE001
         pass
 
+    # Single search_evidence call, reused below for wiki_refs -- the
+    # adapter's TF-IDF scan is a full linear pass over every flattened
+    # doc per call, so running it twice per request doubles the cost.
+    wiki_evs = wiki.search_evidence(query, top_k=5)
+
     # Compose the answer prompt and call the LLM.
     wiki_blob = "\n\n--\n\n".join(
         f"[{r.ref_id}] {r.title}\n{r.source_kind} score={r.score:.2f}\n" +
         # show the first ~600 chars of the body when we can fetch it
         f"{wiki.read_evidence(r.ref_id, limit=1200)}"
-        for r in wiki_evs[:5]
-    ) or "(no wiki/docs evidence)"
-    issue_blob = "\n\n--\n\n".join(
-        f"[{r.ref_id}] {r.title}\n{r.source_kind} score={r.score:.2f}\n" +
-        f"{issue_adapter.read_evidence(r.ref_id, limit=1200)}"
-        for r in issue_evs[:5]
-    ) or "(no issue/PR evidence)"
+        for r in wiki_evs
+    ) or "(no docs evidence)"
 
     prompt = (
-        "You are the OSS Maintainer Helper Agent. Use the evidence below "
-        "(from the target repo's own docs/README and Issues/PRs) to ground "
-        "your answer. Cite sources inline as `[ref_id]`. If the evidence "
-        "does not support a claim, say so explicitly rather than guessing.\n\n"
+        "You are the OSS Maintainer Helper Agent. Use the docs evidence "
+        "below (from the target repo's own README/docs) to ground your "
+        "answer. Cite sources inline as `[ref_id]`. If the evidence does "
+        "not support a claim, say so explicitly rather than guessing.\n\n"
         f"Repo: {owner}/{repo}\n"
         + (f"Question: {question}\n" if question else "")
-        + (f"Issue #{issue} context is included in the search query.\n" if issue is not None else "")
         + "\n## Docs evidence\n\n"
         + wiki_blob
-        + "\n\n## Issue/PR evidence\n\n"
-        + issue_blob
         + "\n\n## Answer\n"
     )
 
@@ -347,11 +321,18 @@ def run_oss_helper(
     return TriageResult(
         owner=owner,
         repo=repo,
-        issue_number=issue,
         question=question,
         answer=answer,
-        wiki_refs=[r.__dict__ for r in wiki_evs],
-        issue_refs=[r.__dict__ for r in issue_evs],
+        wiki_refs=[
+            {
+                "ref_id": r.ref_id,
+                "title": r.title,
+                "score": r.score,
+                "source_kind": r.source_kind,
+                "retrieved_at": r.retrieved_at,
+            }
+            for r in wiki_evs
+        ],
         warnings=warnings,
         duration_ms=int((time.monotonic() - started) * 1000),
     )

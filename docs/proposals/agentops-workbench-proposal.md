@@ -240,24 +240,36 @@ That changes what this proposal can honestly claim, in both directions:
 ### Product scope reduction: one flow, not five adapters
 
 The five adapters stay in the codebase as the general-purpose foundation.
-**The product scope narrows to one flow** — a demo script a reviewer can
-run, rather than an abstraction a reviewer has to be talked through:
+**The product scope narrows to one docs-only flow** — a demo script a
+reviewer can run, rather than an abstraction a reviewer has to be
+talked through:
 
 ```
-agentops-oss-helper <github-repo-url> [--issue N | --question "..."]
+agentops-oss-helper <github-repo-url> [--question "..."]
 ```
 
-Paste a public GitHub repository URL, optionally with an issue number or a
-free-text question. The tool works off **that repository's own Issues and
-PRs** and **that repository's own docs/README**, and produces a grounded
-triage or answer draft with a citation behind every claim — or an explicit
+Paste a public GitHub repository URL and optionally a free-text question.
+The tool works off **that repository's own docs/README** and produces a
+grounded answer with a citation behind every claim — or an explicit
 refusal when the evidence does not support one.
 
+> **Scope reduced from "Issues + PRs + docs" to "docs only" on 2026-09-15.**
+> The original two-source design (Issues/PRs from the GitHub REST API +
+> docs/README from `WikiRagAdapter`) was excluded for the `oss-helper`
+> flagship flow because anonymous GitHub `/search/issues` is constrained
+> to 60 req/h per IP and refuses with 422 on popular or large repos —
+> making the demo fail on the very targets it was meant to demonstrate.
+> The four other adapters (SecurityLog, IncidentLog, TicketSystem, plus
+> WikiRagAdapter itself) remain as the general-purpose pattern. See
+> [ADR-0009](../adr/0009-oss-helper-docs-only-scope.md) for the full
+> rationale.
+
 **Local-first.** There is no hosted multi-tenant service behind this flow.
-A maintainer clones this repo, sets one environment variable, and points
-the CLI at their own repository. The deployed API (below) is a *second*,
-independent surface that exists to prove the backend deploys — it is not
-where this flow is expected to be consumed.
+A maintainer clones this repo and points the CLI at their own
+repository. Zero GitHub-token setup required for the docs-only flow on
+small and medium public repos. The deployed API (below) is a *second*,
+independent surface that exists to prove the backend deploys — it is
+not where this flow is expected to be consumed.
 
 "Here are five adapters, pick one" is not a demo. This is.
 
@@ -265,41 +277,42 @@ where this flow is expected to be consumed.
 
 #### 1. Parse the URL
 
-Accept `https://github.com/<owner>/<repo>`, with or without `.git`, a
-trailing slash, or a trailing `/issues/<N>` (in which case `<N>` is taken
-as `--issue` unless one is passed explicitly). Anything else is rejected
-before any network call. `owner` and `repo` are what
-`GitHubIssueAdapter(owner, repo, token)` needs, and nothing else in the
-URL is used.
+Accept `https://github.com/<owner>/<repo>`, with or without `.git` or
+a trailing slash. Anything else is rejected before any network call.
+`owner` and `repo` are what `WikiRagAdapter(wiki_dir=...)` needs to
+bulk-acquire the repo's docs.
+
+> The `--issue <N>` / `/issues/<N>` URL path that the original design
+> supported is no longer in scope (see the scope-reduction note at the
+> top of this section and [ADR-0009](../adr/0009-oss-helper-docs-only-scope.md)).
+> The current `oss-helper` flag surface is just `--question "..."`.
 
 #### 2. Acquire the repo's docs — by bulk download, not by API
 
 **Decision: fetch the repository's markdown in bulk (one shallow clone or
-one tarball), and use the GitHub REST API only for Issues and PRs.** This
-is not a preference; two independent facts force it.
+one tarball) and use *no* other network source.** This is not a
+preference; one fact forces it:
 
 - **The retrieval math forces bulk acquisition.** `WikiRagAdapter.__init__`
   reads every `*.md` in its directory and builds a corpus-wide document-
   frequency table (`self._df`, `self._n_docs`) before any query runs. IDF
-  is *by definition* a property of the whole corpus. A per-query Contents
-  API fetch cannot produce it — you would be scoring against an IDF table
+  is *by definition* a property of the whole corpus. A per-query API
+  fetch cannot produce it — you would be scoring against an IDF table
   of one document. Bulk-first is a constraint of the algorithm already
   shipped, not a shortcut.
-- **The constructor signature forces a local directory.**
-  `WikiRagAdapter(wiki_dir: str)` takes a path and globs it. An
-  API-sourced docs path would mean writing every blob to disk anyway — a
-  worse `git clone` — or writing a second adapter, which contradicts
-  Update 1's whole point.
+
+(The original design's secondary GitHub-API source for issues and
+PRs was dropped per [ADR-0009](../adr/0009-oss-helper-docs-only-scope.md)
+because anonymous GitHub API access to `/search/issues` is rate-limited
+at 60 req/h per IP and refuses with `422 Validation Failed` on popular
+or large repos, making the demo fail on the very targets it was meant
+to demonstrate. The four other adapters remain in the codebase as
+the general-purpose Adapter pattern, just unused by `oss-helper`.)
 
 Cost comparison, for the record: enumerating a tree and fetching N blobs
 is N+1 REST calls against the same 5000/hour authenticated budget the
 issue search draws from, whereas a git fetch or a `codeload` tarball is
 one transaction that does not consume the REST quota at all.
-
-Conversely, Issues and PRs are **not in the git tree** — they exist only
-through the API, they are mutable, and they are queried rather than
-enumerated. No clone can supply them, and `GitHubIssueAdapter` is already
-written against `httpx`. The split is therefore forced on both sides.
 
 Two acquisition paths, same output directory:
 
@@ -307,6 +320,10 @@ Two acquisition paths, same output directory:
 |---|---|---|
 | Local CLI (git present) | `git clone --depth 1 --filter=blob:none --sparse`, then `git sparse-checkout set README.md docs doc documentation CONTRIBUTING.md` | Smallest transfer on a large repo; blobs fetched only for the paths asked for |
 | Container / no git binary | `GET https://codeload.github.com/<owner>/<repo>/tar.gz/<ref>`, extracted to the same temp dir | One HTTP request, no `git` in the image, no `.git` directory left behind |
+
+(The original design's secondary GitHub-API source for issues and
+PRs is dropped per [ADR-0009](../adr/0009-oss-helper-docs-only-scope.md).
+The remaining bulk-acquisition path is unchanged.)
 
 **Flattening is required, and it is easy to get wrong.**
 `WikiRagAdapter` globs `*.md` **non-recursively**, and a real repository's
@@ -326,18 +343,15 @@ thousands. The CLI refuses above a default cap (order of a few hundred
 markdown files / a few MB of text), raisable with `--max-docs`, with an
 explicit message naming the cap. A monorepo must fail loudly, not wedge.
 
-#### 3. Construct the two adapters
+#### 3. Construct the adapter
 
 - `WikiRagAdapter(wiki_dir=<flattened temp dir>)` — `source_kind="wiki"`.
-- `GitHubIssueAdapter(owner, repo, token)` — `source_kind="github-issue"`.
-  `token` falls back to `AGENTOPS_GITHUB_TOKEN`; unauthenticated works on
-  public repos at GitHub's much lower unauthenticated limit. **Read-only
-  scope only** — see ADR-0008.
 
-The same adapter covers Issues *and* PRs with no code change: GitHub's
-`/search/issues` returns both, and the adapter appends `filters` entries as
-search qualifiers, so `filters={"is": "pr"}` narrows to pull requests and
-`{"is": "issue"}` to issues.
+(No second adapter in the current `oss-helper` scope. The original
+two-source design paired this with `GitHubIssueAdapter` for issues/PRs;
+that adapter remains in the codebase per phase 7 / ADR-0007 as part of
+the Adapter pattern demonstration, but is not used by the flagship
+flow. See [ADR-0009](../adr/0009-oss-helper-docs-only-scope.md).)
 
 #### 4. Topology: a new one, and here is why the existing ones do not fit
 
