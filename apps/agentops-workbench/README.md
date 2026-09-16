@@ -46,17 +46,21 @@ deleted, as the adapter-pattern work lands.)
 ```bash
 # Requires uv (https://docs.astral.sh/uv/)
 uv sync --extra dev
-cp .env.example .env  # edit MINIMAX_API_KEY for live experiments
+cp .env.example .env  # edit AGENTOPS_MINIMAX_API_KEY for a live provider
 uv run pytest -q
 uv run ruff check .
 
-# Run the held-out experiment (local-fake, deterministic):
-AGENTOPS_PROVIDER=local-fake uv run python -m agentops_workbench.experiments.run_held_out
+# Terminal 1 -- the FastAPI backend (serves /v1/wiki/*).
+# AGENTOPS_ALLOW_DEV_TOKEN=1 lets the web UI auto-mint a dev JWT.
+AGENTOPS_PROVIDER=minimax AGENTOPS_ALLOW_DEV_TOKEN=1 \
+  uv run uvicorn agentops_workbench.api.server:app --port 8000
 
-# Bring up the API + UI:
-AGENTOPS_PROVIDER=minimax uv run uvicorn agentops_workbench.api.server:app --port 8000
-AGENTOPS_PROVIDER=minimax uv run streamlit run streamlit_app/app.py
+# Terminal 2 -- the Next.js chat UI, then open http://localhost:3000/
+cd web && npm install && npx next dev --port 3000
 ```
+
+Details of the chat surface itself are in
+[Web UI (wiki chat)](#web-ui-wiki-chat) below.
 
 ## Live provider setup
 
@@ -75,41 +79,17 @@ CI uses `provider=local-fake` and needs no key.
 
 ## Screenshots
 
-The Streamlit UI is the primary operator surface. Both screenshots are
-captured via `scripts/screenshot_streamlit.py` (Playwright driving the
-system Chrome via channel=`chrome`; no playwright-bundled browser
-download required).
+![AgentOps Wiki — directory picker + live groundedness metrics dashboard](docs/screenshots/01_wiki_chat_dashboard.png)
 
-| Step | Capture |
-|------|---------|
-| Operator opens the UI; default task is pre-loaded; the dev-token path auto-mints for `provider=local-fake` | ![Streamlit landing](docs/screenshots/01_landing.png) |
-| After clicking **Submit** on the default LangGraph query, the run panel shows state/tokens/cost/tool-calls and the synthesized answer that quotes doc-001 + doc-002 from the corpus | ![Streamlit after submit](docs/screenshots/02_after_submit.png) |
-| SqliteCheckpointer vs PostgresCheckpointer query — different retrieval ranking + comparison-table answer from doc-002 | ![Streamlit sqlite query](docs/screenshots/03_sqlite_query.png) |
-| Off-topic query ("How do I bake sourdough bread?") — server-side refusal path with `_REFUSE_MESSAGE` | ![Streamlit unrelated query](docs/screenshots/04_unrelated_query.png) |
-| `/_debug/retrieve?task=...` JSON output — web-debug surface to inspect what the agent would surface BEFORE running a full `/v1/runs` cycle | ![Debug endpoint](docs/screenshots/05_debug_endpoint.png) |
-| `/_debug/metrics` JSON — live, recomputed on every request. Reports test count, DB ledger (runs / tool_calls / actions), screenshot bytes, diff-vs-main, and cost. Two caveats surface why `cost_usd` and `tool_calls` are 0 for the current default graph | ![Debug metrics](docs/screenshots/06_metrics_endpoint.png) |
-
-> **Demo scope (2026-09-15):** the `oss-helper` web form is docs-only.
-> Paste a public GitHub repo URL → the tool bulk-acquires the repo's
-> own docs/README → asks the LLM your question grounded in those docs
-> with citations. No GitHub token required for this flow on small to
-> medium public repos. See
-> [ADR-0009](docs/adr/0009-oss-helper-docs-only-scope.md) for the full
-> scope-reduction decision record.
-
-To regenerate after a UI change:
-
-```bash
-# 1) Generate a strong JWT secret and start both servers:
-JWT=$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')
-AGENTOPS_JWT_SECRET="$JWT" uv run uvicorn agentops_workbench.api.server:app --port 8000 &
-AGENTOPS_JWT_SECRET="$JWT" AGENTOPS_ALLOW_DEV_TOKEN=1 \
-  uv run streamlit run streamlit_app/app.py &
-
-# 2) Install the screenshot script's browser driver and regenerate the PNGs:
-uv sync --extra dev
-uv run python scripts/screenshot_streamlit.py
-```
+The Next.js app at `web/` is the operator surface. Step 1 is the
+**Pick your wiki directory** card — the browser's directory picker
+reads the `.md` notes client-side and POSTs them to
+`/v1/wiki/index-files`; the dev-mode badge shows the JWT was
+auto-minted, so there is no token to paste. The **Metrics** card is
+live: Citation Precision, Citation Recall, ROUGE-L F1 and Faithfulness
+bars over the trailing call window, plus a per-stage latency table
+(`tokenize / score / sort+return / total`, p50 and p95). The chat
+panel appears between the two once a directory is picked.
 
 ## Metrics
 
@@ -149,103 +129,63 @@ export AGENTOPS_PRICING_JSON='{"my-fine-tune":{"input_per_1m":1.20,"output_per_1
 
 ## Architecture
 
-Current (`main`, ticketing flow — unchanged by the pivot below):
+One flow: the browser picks a local directory of `.md` notes, the
+backend indexes it into an in-process corpus, and each chat turn
+retrieves from that corpus, answers with numbered citations, and scores
+the answer before it reaches the UI.
 
 ```
-task -> [retrieve] -> [classify] -> (answer | refuse | clarify)
-                                       |
-                                       v
-                                  answer + ticket draft
-                                       |
-                                       v
-                              POST /v1/actions/{id}/approve
-                                       |
-                                       v
-                              publish_ticket (mock ledger)
+web/ (Next.js)  --- POST /v1/wiki/index-files --->  wiki_corpus.py
+  directory picker    {path, content, mtime}[]        temp dir + WikiRagAdapter
+                                                      -> corpus_id (LRU registry)
+
+web/ chat turn  --- POST /v1/wiki/qa ----------->  graph/wiki_chat.py
+  {corpus_id, query, thread_id}                     [retrieve] -> [answer]
+                                                        |            |
+                                                   wiki_corpus     LLMAdapter
+                                                    .search        (provider-agnostic)
+                                                        |
+                                                   groundedness.py
+                                                    Faithfulness / ROUGE-L F1 /
+                                                    Citation Precision + Recall
+                                                        |
+                                                   wiki_metrics.py  <-- GET /v1/wiki/metrics
+                                                    rolling p50/p95 + averages
 ```
 
-**Planned (ADR-0007, in open PRs — not yet wired into the graph):** the
-`[retrieve]` step's single hardcoded document corpus generalizes into a
-pluggable `EvidenceSourceAdapter` — the graph asks for evidence, an
-adapter answers it, and which adapter is live is a deployment choice, not
-a code branch:
-
-```
-task -> [retrieve via EvidenceSourceAdapter] -> [classify] -> ...
-              |
-              +-- WikiRagAdapter        (internal/personal wiki, TF-IDF RAG)
-              +-- GitHubIssueAdapter    (GitHub Issues, real API)
-              +-- SecurityLogAdapter    (structured logs, window/filters)
-              +-- IncidentLogAdapter    (timeout/rate-limit aggregates)
-              +-- TicketSystemAdapter   (facade over the existing mock ledger --
-                                          proves the pattern covers the ORIGINAL
-                                          ticketing use case too, no new domain logic)
-```
-
-Adapters live in `src/agentops_workbench/adapters/` once that PR merges;
-`graph/planner_executor.py`/`graph/single_agent.py` still call
-`DocumentClient` directly today. Migrating the graph onto the adapter
-interface is deliberately a separate, later step (topology-per-adapter
-budget/latency tradeoffs need their own decision) — see ADR-0007's
-"Consequences" for what it does and doesn't settle yet.
-
-- **LangGraph** (`langgraph==1.2.11`): fixed graph (default), single-agent and bounded planner/executor variants behind a single `run_topology(name, ...)` registry (ADR-0006 ships the fixed graph)
-- **MCP** (`mcp==2.2.0`, spec `2026-07-28`): custom document server over stdio + pinned `@modelcontextprotocol/server-filesystem` (fixture-only scope)
-- **FastAPI**: `POST /v1/runs`, `GET /v1/runs/{id}`, `POST /v1/runs/{id}/cancel`, `POST /v1/actions` (HS256 JWT, `AGENTOPS_JWT_SECRET` in `.env`)
-- **SQLAlchemy + SQLite** (Postgres in prod): runs / tool_calls / actions
-- **Streamlit UI**: submit / inspect / approve / cancel
-- **OTel**: spans + redacted trace export (`runs/<id>/trace.otel.jsonl`)
-- **Provider**: `{openai, anthropic, minimax, local-fake}` behind `LLMAdapter`; graph code never names a provider
-
-## Dataset
-
-30 cases split **18 dev / 6 val / 6 held-out**, 6 task families
-(straightforward, multi_doc, ambiguous, missing_evidence, stale_doc,
-tool_failure). Held-out set is content-hashed into
-`fixtures/cases/HELD_OUT_SHA256.txt` and frozen before Phase 3 tuning.
-
-## Evaluation
-
-Run `uv run python -m agentops_workbench.experiments.run_held_out` to
-produce `experiments/held-out-v1/{outcomes.jsonl, manifest.json,
-failed_cases.md, uncertainty.md}`. SpendCeiling (default $5.00) is
-enforced before execution.
+- **LangGraph** (`langgraph==1.2.11`): `graph/wiki_chat.py` is a checkpointed retrieve → answer graph. A `MemorySaver` checkpointer keyed by `thread_id` holds the transcript server-side, so the client sends only `{corpus_id, query, thread_id}` on a follow-up turn, never the growing history. Non-serializable runtime objects (the live `LLMAdapter`, the `Tracer`) travel in `config["configurable"]`, not in state.
+- **Retrieval**: `wiki_corpus.py` owns a process-local, LRU-capped registry of corpora. Each one is a `WikiRagAdapter` (`adapters/wiki_rag.py`, TF-IDF + cosine) built over a temp dir of the uploaded notes; hits carry provenance fields (`source_path`, `evidence_span` with character offsets, `coverage`, `contributing_terms`, `mtime`). Nothing is persisted to server disk beyond the corpus lifetime.
+- **Groundedness**: `groundedness.py` computes the four per-turn metrics; `wiki_metrics.py` keeps the trailing 200-call windows the dashboard reads.
+- **FastAPI**: `POST /v1/wiki/index-files`, `GET /v1/wiki/search`, `POST /v1/wiki/qa`, `GET /v1/wiki/metrics`, plus `GET /v1/auth/dev-token` and `GET /v1/auth/dev-mode` for the local auto-mint path (HS256 JWT, `AGENTOPS_JWT_SECRET` in `.env`).
+- **SQLAlchemy + SQLite** (Postgres in prod): `db/models.py` — the run ledger tables behind the API's persistence layer and `/_debug/metrics`.
+- **Provider**: `{openai, anthropic, minimax, local-fake}` behind `LLMAdapter`; graph code never names a provider.
 
 ## Code layout
 
 ```
 src/agentops_workbench/
-  adapters/{base,wiki_rag,security_log,incident_log,github_issue,ticket_system}.py
-                             # EvidenceSourceAdapter pattern (ADR-0007, open PR --
-                             # NOT yet imported by graph/**, see Architecture above)
-  api/server.py              # FastAPI + JWT
-  benchmark/{scorers,load}.py
-  db/{models,session}.py
-  experiments/{held_out,run_held_out}.py
+  api/server.py              # FastAPI + JWT; /v1/wiki/*, /v1/auth/dev-token,
+                             # /_debug/metrics
+  wiki_corpus.py             # per-corpus_id registry (LRU) + provenance-aware
+                             # search over the picked directory
+  adapters/wiki_rag.py       # WikiRagAdapter -- TF-IDF + cosine retrieval
+  graph/wiki_chat.py         # checkpointed multi-turn chat graph (MemorySaver,
+                             # keyed by thread_id) + numbered citations
   graph/{fixed,single_agent,planner_executor,topology,state}.py
-  llm/{adapter,factory,local_fake,minimax,openai_compat}.py
+  groundedness.py            # Faithfulness, ROUGE-L F1, Citation Precision/Recall
+  wiki_metrics.py            # trailing-window latency + groundedness recorders
+  llm/{adapter,factory,local_fake,minimax,openai_compat,pricing}.py
+  db/{models,session}.py     # SQLAlchemy models + session factory
   mcp/mcp_servers/{document,filesystem}/...
-  mocks/tickets.py           # idempotent mock ledger
   observability/otel.py      # Tracer + redact
-  web/                        # Next.js 15 chat UI (multi-turn + Faithfulness
-                             # dashboard + Obsidian deep-links); see
-                             # `Web UI (wiki chat)` section below.
-docs/
-  scope.md                   # in/out scope
-  RUNBOOK.md                 # bring up + clear ledger + read trace
-  EVIDENCE_CARD.md           # what we built + what we measured
-  demo.md                    # 5-minute demo script
-  web/                        # Next.js 15 chat UI (multi-turn + Faithfulness
+web/
+  app/{page,layout,HomePageImpl,MetricsPanel}.tsx
+                             # Next.js 15 chat UI (multi-turn + Faithfulness
                              # dashboard + Obsidian deep-links); see
                              # "Web UI (wiki chat)" below.
-  adr/0001..0007-*.md        # design decisions (0007 = evidence-source adapters, open PR)
-fixtures/
-  cases/{dev,val,held_out,pilot}/case-*.json
-  docs/doc-001..008-*.md
-  llm/scripts/default.jsonl
-docker/
-  docker-compose.yml         # postgres + api + worker + streamlit + mcp-document
-  Dockerfile
+docs/
+  adr/000{1,2,3,4,6,7,8}-*.md  # design decisions
+  screenshots/               # README captures
 ```
 
 ## Tests
@@ -334,8 +274,8 @@ explorer.
 Per-stage p50/p95 of `/v1/wiki/search` and `/v1/wiki/qa` over a
 trailing 200-call window: `tokenize / score / sort+return / total`
 in ms. If a stage's p95 dominates total p95, look there first —
-on the current code base, `score` (the BM25-or-fallback full-text
-scan over the corpus) is usually the slow tail.
+on the current code base, `score` (the TF-IDF + cosine-similarity scan
+over the corpus, `WikiRagAdapter._cosine_score`) is usually the slow tail.
 
 ## References
 
