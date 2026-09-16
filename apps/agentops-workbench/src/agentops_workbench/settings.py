@@ -66,6 +66,15 @@ class Settings(BaseSettings):
     # (default) and route JWTs through an ID provider (Auth0/Cognito/etc).
     allow_dev_token: bool = False
 
+    # Deliberate second opt-in: lets auto-mint (allow_dev_token) also
+    # cover a real provider (minimax/openai/anthropic), for someone
+    # running this locally as a demo with a real API key but without a
+    # real login system. Requires BOTH flags explicitly set -- setting
+    # a real provider must never, by itself, re-enable an
+    # unauthenticated token-minting HTTP endpoint. Without this second
+    # flag, the original provider==local-fake-only gate is unchanged.
+    dev_token_any_provider: bool = False
+
     def resolved_corpus(self, override: str | None = None) -> tuple[str, bool]:
         """Resolve the (corpus_dir, wiki_mode) tuple for a single run.
 

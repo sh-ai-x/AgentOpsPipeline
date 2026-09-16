@@ -376,12 +376,30 @@ class DevTokenResponse(BaseModel):
 
 
 def _dev_token_allowed() -> bool:
-    """Return True iff GET /v1/auth/dev-token should be served."""
+    """Return True iff GET /v1/auth/dev-token should be served.
+
+    Two independent gates:
+      1. `allow_dev_token` -- the original opt-in. Without it, dev-mode
+         auto-mint is off (the default).
+      2. Either `provider == "local-fake"` (the offline fake) OR
+         `dev_token_any_provider` (a deliberate second opt-in for local
+         use with a real provider).
+
+    The second gate (`dev_token_any_provider`) is deliberately separate
+    from `provider` so a real provider never silently re-enables
+    unauthenticated token-minting on its own: the operator has to set
+    BOTH flags on purpose. Without that, the original
+    provider==local-fake-only gate is unchanged -- a real deployment
+    with provider=minimax gets a 403 even if AGENTOPS_ALLOW_DEV_TOKEN=1
+    is set, which is the safety default.
+    """
     try:
         settings = get_settings()
     except Exception:  # noqa: BLE001 - dev-only probe
         return False
-    return settings.provider == "local-fake" and settings.allow_dev_token
+    if not settings.allow_dev_token:
+        return False
+    return settings.provider == "local-fake" or settings.dev_token_any_provider
 
 
 @app.get("/v1/auth/dev-token", response_model=DevTokenResponse)
@@ -389,17 +407,19 @@ def dev_token(principal_id: str = "dev-user") -> DevTokenResponse:
     """Mint a fresh JWT for `principal_id`. Dev-only.
 
     Disabled by default. Enable with `AGENTOPS_ALLOW_DEV_TOKEN=1` AND
-    `AGENTOPS_PROVIDER=local-fake` (the latter is the dev default).
-    A real deployment with `provider=minimax|openai|anthropic` will
-    get a 403 even if the env var is set — prevents accidentally
-    shipping dev-mode auth to prod.
+    EITHER `AGENTOPS_PROVIDER=local-fake` (the dev default) OR
+    `AGENTOPS_DEV_TOKEN_ANY_PROVIDER=1` (a deliberate second opt-in for
+    a local/demo run against a real provider). A real deployment with
+    `provider=minimax|openai|anthropic` and only the first flag set
+    still gets a 403 -- prevents accidentally shipping dev-mode auth to
+    prod.
     """
     if not _dev_token_allowed():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "/v1/auth/dev-token is dev-only. Set provider=local-fake "
-                "and AGENTOPS_ALLOW_DEV_TOKEN=1 to enable."
+                "/v1/auth/dev-token is dev-only. Set AGENTOPS_ALLOW_DEV_TOKEN=1 "
+                "and either provider=local-fake or AGENTOPS_DEV_TOKEN_ANY_PROVIDER=1."
             ),
         )
     settings = get_settings()

@@ -355,15 +355,30 @@ def test_dev_mode_status_reports_enabled(
 
 
 def test_dev_mode_status_reports_disabled_by_default(
-    client: TestClient,
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With AGENTOPS_ALLOW_DEV_TOKEN unset, dev-mode is off and the
-    endpoint reports it."""
-    import agentops_workbench.settings as _settings
-    _settings._settings = None  # ensure fresh read
-    r = client.get("/v1/auth/dev-mode")
-    assert r.status_code == 200
-    assert r.json()["enabled"] is False
+    """With AGENTOPS_ALLOW_DEV_TOKEN unset (and dev_token_any_provider
+    unset too), dev-mode is off and the endpoint reports it. Both must
+    be unset because either alone is enough to enable auto-mint.
+
+    Like the second-flag tests, the on-disk `.env` overrides monkey-
+    patched env, so this test patches the singleton's settings directly
+    to simulate the unset state -- otherwise the live `.env` (which
+    deliberately has both flags set for the local demo) would mask
+    what we're trying to verify."""
+    import agentops_workbench.api.server as server_mod
+    import agentops_workbench.settings as settings_mod
+    settings_mod._settings = None
+    s = settings_mod.get_settings()
+    s.allow_dev_token = False  # type: ignore[misc]
+    s.dev_token_any_provider = False  # type: ignore[misc]
+    server_mod.search_metrics.reset_for_tests()
+    try:
+        r = client.get("/v1/auth/dev-mode")
+        assert r.status_code == 200
+        assert r.json()["enabled"] is False
+    finally:
+        settings_mod._settings = None
 
 
 def test_dev_token_endpoint_returns_jwt_when_enabled(
@@ -556,3 +571,80 @@ def test_search_hit_obsidian_uri_omitted_when_no_vault_name_supplied(
     assert body["results"][0].get("obsidian_uri") in (None, ""), (
         "no vault_name -> no deep link (avoids guessing a vault to open)"
     )
+
+
+# ---- Dev-mode auto-mint on a real provider (the deliberate
+# double-opt-in for a local demo with no real login system) ----
+
+
+@pytest.fixture
+def dev_mode_on_real_provider_without_second_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    import agentops_workbench.settings as _settings
+    _settings._settings = None
+    monkeypatch.setenv("AGENTOPS_ALLOW_DEV_TOKEN", "1")
+    monkeypatch.setenv("AGENTOPS_PROVIDER", "minimax")
+    monkeypatch.delenv("AGENTOPS_DEV_TOKEN_ANY_PROVIDER", raising=False)
+    _settings._settings = None
+    yield
+    _settings._settings = None
+
+
+@pytest.fixture
+def dev_mode_on_real_provider_with_second_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENTOPS_ALLOW_DEV_TOKEN", "1")
+    monkeypatch.setenv("AGENTOPS_PROVIDER", "minimax")
+    monkeypatch.setenv("AGENTOPS_DEV_TOKEN_ANY_PROVIDER", "1")
+    import agentops_workbench.settings as _settings
+    _settings._settings = None
+    yield
+    _settings._settings = None
+
+
+def test_dev_mode_stays_off_for_real_provider_without_the_second_flag(
+    client: TestClient, dev_mode_on_real_provider_without_second_flag: None
+) -> None:
+    """Regression guard: setting a real provider must never, by itself,
+    re-enable the unauthenticated dev-token HTTP endpoint -- that would
+    silently reintroduce the exact prod-exposure risk the original
+    provider==local-fake gate existed to prevent.
+
+    Both monkeypatch and a `get_settings` patch are needed: pydantic-
+    settings reads `.env` directly, so monkeypatching os.environ alone
+    leaves the second flag in scope. The patch below overrides the
+    singleton's return value to the no-second-flag case, which is the
+    cleanest way to test the gate's logic in isolation from the
+    on-disk `.env`."""
+    import agentops_workbench.api.server as server_mod
+    import agentops_workbench.settings as settings_mod
+    settings_mod._settings = None
+    # Re-read settings under the fixture's monkeypatched env: provider
+    # and allow_dev_token are set, dev_token_any_provider is unset.
+    s = settings_mod.get_settings()
+    s.dev_token_any_provider = False  # type: ignore[misc]
+    server_mod.search_metrics.reset_for_tests()
+    try:
+        r = client.get("/v1/auth/dev-mode")
+        assert r.json()["enabled"] is False
+
+        r = client.get("/v1/auth/dev-token")
+        assert r.status_code == 403
+    finally:
+        settings_mod._settings = None
+
+
+def test_dev_mode_enabled_for_real_provider_with_explicit_second_flag(
+    client: TestClient, dev_mode_on_real_provider_with_second_flag: None
+) -> None:
+    """The deliberate double opt-in: both AGENTOPS_ALLOW_DEV_TOKEN=1 and
+    AGENTOPS_DEV_TOKEN_ANY_PROVIDER=1 set -> auto-mint works with a real
+    provider too, restoring the zero-manual-paste UX for local/demo use."""
+    r = client.get("/v1/auth/dev-mode")
+    assert r.status_code == 200
+    assert r.json()["enabled"] is True
+    assert r.json()["provider"] == "minimax"
+
+    r = client.get("/v1/auth/dev-token", params={"principal_id": "reviewer"})
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body["token"], str) and len(body["token"]) > 50
+    assert body["principal_id"] == "reviewer"
