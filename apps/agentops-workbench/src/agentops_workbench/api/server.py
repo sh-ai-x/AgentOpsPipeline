@@ -26,7 +26,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jwt
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, status
@@ -772,6 +772,12 @@ class IndexFilesBody(BaseModel):
     # search hit. Optional: missing -> no deep links emitted (avoids
     # guessing a vault to open).
     vault_name: str | None = None
+    # Retrieval algorithm for this corpus. None -> settings.wiki_default_retrieval.
+    # "bm25" saturates term-frequency and normalizes by document length;
+    # "tfidf" (or the settings default) is the original cosine-similarity
+    # scorer. Pydantic rejects any other value with a 422 before this
+    # ever reaches wiki_corpus.index_uploaded_files.
+    retrieval: Literal["tfidf", "bm25"] | None = None
 
 
 class IndexFilesResponse(BaseModel):
@@ -871,7 +877,7 @@ def index_files(
     ]
     try:
         corpus_id, _work_dir, doc_count = wiki_corpus.index_uploaded_files(
-            files_payload, vault_name=body.vault_name
+            files_payload, vault_name=body.vault_name, retrieval=body.retrieval
         )
     except ValueError as exc:
         raise HTTPException(

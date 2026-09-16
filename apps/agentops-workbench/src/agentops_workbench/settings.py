@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     docs_dir: str = "fixtures/docs"
     wiki_dir: str = ""
 
+    # Default retrieval algorithm for newly indexed wiki corpora
+    # ("tfidf" or "bm25" -- Okapi BM25, k1=1.5 b=0.75). Per-request
+    # override via IndexFilesBody.retrieval; this is just the fallback
+    # when the client doesn't specify one.
+    wiki_default_retrieval: str = "tfidf"
+
     # Trace export (OTel spans per run)
     runs_dir: str = "./runs"
 

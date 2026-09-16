@@ -7,9 +7,10 @@ Phase 9 design:
     them to a temp dir, builds a WikiRagAdapter on top, returns a
     corpus_id.
   - Subsequent /v1/wiki/search?corpus_id=... calls hit the registry,
-    not the filesystem. The same WikiRagAdapter (TF-IDF + cosine) is
-    used that the planner_executor and single_agent topologies
-    already use — no new retrieval algorithm.
+    not the filesystem. The same WikiRagAdapter used by the
+    planner_executor and single_agent topologies backs this too, now
+    with a selectable retrieval mode ("tfidf" default, or "bm25") --
+    see WikiRagAdapter's module docstring for the tradeoff.
   - Search results gain five trust fields (AC3): source_path,
     evidence_span (with character offsets), coverage, contributing_terms,
     mtime.
@@ -284,17 +285,23 @@ def index_uploaded_files(
     files: list[dict],
     *,
     vault_name: str | None = None,
+    retrieval: str | None = None,
 ) -> tuple[str, Path, int]:
     """Write uploaded {path, content, mtime} entries to a temp dir and
     build a WikiRagAdapter on top. `vault_name`, when supplied,
     records an Obsidian vault name on the corpus entry so every
     search hit can mint an `obsidian://` deep link for one-click
-    opening in the user's vault.
+    opening in the user's vault. `retrieval` selects "tfidf" (default)
+    or "bm25"; None falls back to `settings.wiki_default_retrieval`.
 
     Returns (corpus_id, work_dir, doc_count). The caller is responsible
     for cleanup via cleanup_corpus(corpus_id) — or letting the registry
     LRU evict it.
     """
+    if retrieval is None:
+        from .settings import get_settings
+
+        retrieval = get_settings().wiki_default_retrieval
     work_dir = Path(tempfile.mkdtemp(prefix="wiki-corpus-"))
     source_paths: dict[str, str] = {}
     mtimes: dict[str, int] = {}
@@ -324,7 +331,7 @@ def index_uploaded_files(
     reg.register(
         corpus_id,
         lambda: (
-            WikiRagAdapter(wiki_dir=str(work_dir)),
+            WikiRagAdapter(wiki_dir=str(work_dir), retrieval=retrieval),
             work_dir,
             source_paths,
             mtimes,
@@ -420,15 +427,17 @@ def search_with_timing(
     for r in raw_hits:
         ref_id = r.ref_id
         full_text = adapter.read_evidence(ref_id, limit=10_000)
-        # Compute per-term TF-IDF contributions to surface "why this doc".
-        # Use the adapter's internal counters; if the ref_id isn't there
-        # for any reason, skip contributions cleanly.
+        # Compute per-term contributions to surface "why this doc". Uses
+        # whichever IDF variant the adapter's active retrieval mode
+        # actually scores with (_contributing_term_weight picks TF-IDF's
+        # or BM25's), so this stays accurate under either mode. Skip
+        # cleanly if the ref_id isn't in the adapter's counters.
         contributing: list[str] = []
         if ref_id in adapter._doc_term_counts:
             doc_counts = adapter._doc_term_counts[ref_id]
             scored_terms = sorted(
                 doc_counts.items(),
-                key=lambda kv: -kv[1] * adapter._idf(kv[0]),
+                key=lambda kv: -kv[1] * adapter._contributing_term_weight(kv[0]),
             )
             contributing = [t for t, _ in scored_terms[:5]]
 

@@ -117,6 +117,28 @@ def test_index_uploaded_files_preserves_path_encoding_for_nested_files(
         wiki_corpus.cleanup_corpus(corpus_id)
 
 
+def test_index_uploaded_files_defaults_to_tfidf_retrieval(
+    tmp_path: Path, sample_files: list[dict]
+) -> None:
+    corpus_id, _, _ = index_uploaded_files(sample_files)
+    try:
+        entry = wiki_corpus.get_registry().get(corpus_id)
+        assert entry.adapter._retrieval == "tfidf"
+    finally:
+        wiki_corpus.cleanup_corpus(corpus_id)
+
+
+def test_index_uploaded_files_honors_explicit_bm25_retrieval(
+    tmp_path: Path, sample_files: list[dict]
+) -> None:
+    corpus_id, _, _ = index_uploaded_files(sample_files, retrieval="bm25")
+    try:
+        entry = wiki_corpus.get_registry().get(corpus_id)
+        assert entry.adapter._retrieval == "bm25"
+    finally:
+        wiki_corpus.cleanup_corpus(corpus_id)
+
+
 # ---- Search with provenance fields ----
 
 
