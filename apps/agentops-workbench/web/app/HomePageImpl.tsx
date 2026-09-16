@@ -258,10 +258,7 @@ export default function HomePageImpl() {
   const [corpusId, setCorpusId] = useState<string | null>(null);
   const [docCount, setDocCount] = useState<number | null>(null);
   const [indexDurationMs, setIndexDurationMs] = useState<number | null>(null);
-  // Search state.
-  const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(5);
-  const [hits, setHits] = useState<Hit[] | null>(null);
   // Chat state -- multi-turn transcript.
   // `messages` holds the full conversation so the operator can scroll
   // back through prior turns; `chatInput` is the unsent draft. `threadId`
@@ -356,7 +353,6 @@ export default function HomePageImpl() {
       setCorpusId(idx.corpus_id);
       setDocCount(idx.doc_count);
       setIndexDurationMs(idx.duration_ms);
-      setHits(null);
       // Picking a new directory resets the conversation -- a fresh
       // corpus is a fresh thread.
       setMessages([]);
@@ -369,32 +365,6 @@ export default function HomePageImpl() {
       } else {
         setError((err as Error).message);
       }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // ----- AC2 + AC3: search routed to existing WikiRagAdapter with provenance -----
-  async function onSearch(e: React.FormEvent) {
-    e.preventDefault();
-    if (!query.trim() || !bearer || !corpusId) return;
-    setBusy(true);
-    setError(null);
-    setHits(null);
-    try {
-      const qs = new URLSearchParams({
-        corpus_id: corpusId,
-        q: query,
-        top_k: String(topK),
-      });
-      const r = await fetch(`/api/v1/wiki/search?${qs.toString()}`, {
-        headers: authHeaders(),
-      });
-      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-      const data = (await r.json()) as { results: Hit[] };
-      setHits(data.results);
-    } catch (err) {
-      setError((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -497,80 +467,7 @@ export default function HomePageImpl() {
       {corpusId && (
         <>
           <section className="card">
-            <h2>2. Search</h2>
-            <MetricsGuide topic="search" />
-            <form onSubmit={onSearch} className="search-row">
-              <input
-                placeholder="search query (e.g. 'langgraph checkpointing')"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              <input
-                type="number"
-                min={1}
-                max={20}
-                value={topK}
-                onChange={(e) =>
-                  setTopK(Math.max(1, Math.min(20, Number(e.target.value) || 5)))
-                }
-                style={{ flex: "0 0 72px" }}
-              />
-              <button type="submit" className="primary" disabled={busy || !query.trim()}>
-                {busy ? "..." : "Search"}
-              </button>
-            </form>
-
-            {hits !== null && hits.length === 0 && (
-              <p className="status">no results</p>
-            )}
-
-            {hits?.map((h, i) => (
-              <article className="hit" key={`${h.ref_id}-${i}`}>
-                <div className="hit-title">
-                  {h.obsidian_uri ? (
-                    <a
-                      className="hit-link"
-                      href={h.obsidian_uri}
-                      target="_blank"
-                      rel="noreferrer"
-                      title="Open in Obsidian vault"
-                    >
-                      <code>{h.source_path}</code> — <em>{h.ref_id}</em>
-                    </a>
-                  ) : (
-                    <>
-                      <code>{h.source_path}</code> — <em>{h.ref_id}</em>
-                    </>
-                  )}
-                </div>
-                <div className="hit-meta">
-                  <span className="metric">
-                    score <strong>{h.score.toFixed(3)}</strong>
-                  </span>
-                  <span className="metric-sep">·</span>
-                  <span
-                    className="metric"
-                    style={{ color: groundednessColor(h.coverage) }}
-                  >
-                    coverage <strong>{(h.coverage * 100).toFixed(0)}%</strong>
-                  </span>
-                  <span className="metric-sep">·</span>
-                  <span className="metric muted">
-                    mtime {new Date(h.mtime).toISOString().slice(0, 19)}
-                  </span>
-                </div>
-                <div className="hit-terms muted">
-                  terms: {h.contributing_terms.slice(0, 5).join(", ") || "(none)"}
-                </div>
-                <pre className="hit-body">
-                  {highlightSpan(h.evidence_span, h.evidence_span, h.match_offsets, 0)}
-                </pre>
-              </article>
-            ))}
-          </section>
-
-          <section className="card">
-            <h2>3. Chat (multi-turn)</h2>
+            <h2>2. Chat (multi-turn)</h2>
             <MetricsGuide topic="qa" />
             <p className="muted" style={{ marginTop: -4 }}>
               Each follow-up question uses the prior turn's context
