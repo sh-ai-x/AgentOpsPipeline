@@ -88,11 +88,17 @@ const SKIP_DIR_NAMES = new Set([
 
 // Recursive walk + junk-skip + .md read. Browser-side mirror of
 // `collect_wiki_files` on the server, so what the user sees is what
-// gets indexed.
+// gets indexed. Also peeks for a `.obsidian/` subdirectory (which we
+// skip from the file list but use to detect "this is an Obsidian
+// vault" so the upload can carry `vault_name`).
 async function walkPickedDir(
   root: FileSystemDirectoryHandle,
-): Promise<{ path: string; content: string; mtime: number }[]> {
+): Promise<{
+  files: { path: string; content: string; mtime: number }[];
+  hasObsidian: boolean;
+}> {
   const out: { path: string; content: string; mtime: number }[] = [];
+  let hasObsidian = false;
 
   async function visit(
     dir: FileSystemDirectoryHandle,
@@ -102,6 +108,11 @@ async function walkPickedDir(
     // @ts-expect-error -- FileSystemDirectoryHandle.values() types missing in some TS libs
     for await (const entry of dir.values()) {
       if (entry.kind === "directory") {
+        if (entry.name === ".obsidian" && prefix === "") {
+          hasObsidian = true;
+          // Don't recurse -- Obsidian's plugin/config dir isn't content.
+          continue;
+        }
         if (SKIP_DIR_NAMES.has(entry.name) || entry.name.startsWith(".")) {
           continue;
         }
@@ -123,7 +134,7 @@ async function walkPickedDir(
   }
 
   await visit(root, "");
-  return out;
+  return { files: out, hasObsidian };
 }
 
 function escapeRegExp(s: string): string {
@@ -268,6 +279,11 @@ export default function HomePageImpl() {
   const [corpusId, setCorpusId] = useState<string | null>(null);
   const [docCount, setDocCount] = useState<number | null>(null);
   const [indexDurationMs, setIndexDurationMs] = useState<number | null>(null);
+  // True when the picked directory's root contains a `.obsidian/`
+  // subdirectory AND the server got a vault_name with the upload --
+  // in which case every hit carries an `obsidian_uri` deep link.
+  // Resets on every new directory pick.
+  const [isObsidianVault, setIsObsidianVault] = useState(false);
   const [topK, setTopK] = useState(5);
   // Chat state -- multi-turn transcript.
   // `messages` holds the full conversation so the operator can scroll
@@ -344,7 +360,7 @@ export default function HomePageImpl() {
       // surface as a friendly message.
       // @ts-expect-error -- showDirectoryPicker is not in lib.dom typings universally
       const root: FileSystemDirectoryHandle = await window.showDirectoryPicker({ mode: "read" });
-      const files = await walkPickedDir(root);
+      const { files, hasObsidian } = await walkPickedDir(root);
       if (files.length === 0) {
         setError(
           "No .md files found under the picked directory (junk dirs " +
@@ -352,20 +368,35 @@ export default function HomePageImpl() {
         );
         return;
       }
-      // POST the files to /v1/wiki/index-files.
+      // POST the files to /v1/wiki/index-files. Auto-detected
+      // Obsidian vault -> send `vault_name` so the server stamps
+      // `obsidian_uri` on every hit and the References tab becomes
+      // one-click "open in vault" links.
+      const uploadBody: {
+        files: typeof files;
+        vault_name?: string;
+      } = { files };
+      if (hasObsidian) {
+        uploadBody.vault_name = root.name ?? "vault";
+      }
       const r = await fetch("/api/v1/wiki/index-files", {
         method: "POST",
         headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ files }),
+        body: JSON.stringify(uploadBody),
       });
       if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
       const idx = (await r.json()) as IndexResponse;
       setCorpusId(idx.corpus_id);
       setDocCount(idx.doc_count);
       setIndexDurationMs(idx.duration_ms);
+      // Surface a one-line "obsidian vault detected" hint so the
+      // operator knows hits will be Obsidian deep links rather than
+      // generic file:// paths.
+      setIsObsidianVault(hasObsidian);
       // Picking a new directory resets the conversation -- a fresh
       // corpus is a fresh thread.
       setMessages([]);
+      setIsObsidianVault(false);
       setChatInput("");
       setThreadId(null);
     } catch (err) {
@@ -469,6 +500,9 @@ export default function HomePageImpl() {
           <p className="status">
             ✓ indexed <strong>{docCount}</strong> file
             {docCount === 1 ? "" : "s"} in <strong>{indexDurationMs}ms</strong>
+            {isObsidianVault && (
+              <span className="muted"> · Obsidian vault detected — references open in Obsidian</span>
+            )}
             <br />
             <span className="muted">corpus_id = {corpusId}</span>
           </p>
@@ -593,12 +627,26 @@ export default function HomePageImpl() {
                           <article className="hit" key={`chat-${i}-${h.ref_id}-${j}`}>
                             <div className="hit-title">
                               {h.obsidian_uri ? (
+                                // obsidian:// is a custom protocol handled
+                                // by the desktop app. The browser needs to
+                                // navigate the *current* tab for the OS
+                                // protocol handler to take over -- opening
+                                // a new tab (target="_blank") is silently
+                                // rejected because most browser installations
+                                // do not register `obsidian` as a new-tab
+                                // scheme. So: a plain anchor, no target,
+                                // and a `pointerdown` fallback that uses
+                                // window.location.assign (which respects
+                                // the protocol handler the same way a user
+                                // typing the URL into the address bar would).
                                 <a
                                   className="hit-link"
                                   href={h.obsidian_uri}
-                                  target="_blank"
-                                  rel="noreferrer"
                                   title={`Open in Obsidian vault — ${h.source_path}`}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    window.location.href = h.obsidian_uri!;
+                                  }}
                                 >
                                   <code>{h.source_path}</code> — <em>{h.ref_id}</em>
                                 </a>
