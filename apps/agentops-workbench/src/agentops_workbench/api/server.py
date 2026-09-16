@@ -5,6 +5,12 @@ Endpoints (proposal §"Contracts and APIs"):
   GET  /v1/runs/{id}              -> state, evidence, last error, token usage
   POST /v1/runs/{id}/cancel       -> state -> cancelling; refuses new tool calls
   POST /v1/actions/{id}/approve   -> action-bound approval
+  POST /v1/wiki/index-files       -> upload .md files, returns corpus_id (AC1)
+  GET  /v1/wiki/search            -> TF-IDF search over a corpus, with
+                                     AC3 trust fields (source_path,
+                                     evidence_span, coverage, etc.) (AC2/AC3)
+  POST /v1/wiki/qa                -> search + LLM answer + per-sentence
+                                     groundedness (AC3)
 
 Auth: HS256 JWT (dev secret in .env). principal_id from the `sub` claim.
 """
@@ -19,6 +25,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import jwt
@@ -26,7 +33,7 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from .. import dev_metrics, oss_helper
+from .. import dev_metrics, groundedness, oss_helper, wiki_corpus
 from ..db.models import Action, Run, ToolCall
 from ..db.session import session_scope
 from ..graph.state import RunState, is_terminal, make_action_key
@@ -370,7 +377,6 @@ def debug_retrieve(task: str) -> dict:
                 "AGENTOPS_ALLOW_DEBUG_METRICS=1 to enable on a real provider."
             ),
         )
-    from pathlib import Path
     docs_dir = (Path(__file__).parent.parent.parent / "fixtures" / "docs")
     from ..mcp import InMemoryDocumentClient
     client = InMemoryDocumentClient(docs_dir=str(docs_dir))
@@ -634,4 +640,233 @@ def _format_oss_helper_html(repo_url: str, *, repo_header: str = "") -> str:
         "{repo_url_value}", _html.escape(repo_url or "")
     ).replace(
         "{repo_header}", repo_header or ""
+    )
+
+
+# ---- Wiki corpus (Phase 9: browser-native directory picker) ----
+#
+# The browser File System Access API lets a reviewer pick a directory
+# and read its .md files client-side. The browser POSTs each file's
+# {path, content, mtime} here; the server writes them to a temp dir,
+# builds a WikiRagAdapter (the same TF-IDF + cosine retrieval the
+# planner_executor and single_agent topologies already use), and
+# returns a corpus_id. corpus_id is process-local + LRU-capped;
+# persistent storage is intentionally NOT supported (would mean
+# keeping user files on server disk — a privacy regression).
+
+
+class _WikiFileUpload(BaseModel):
+    path: str
+    content: str
+    mtime: int = 0
+
+
+class IndexFilesBody(BaseModel):
+    files: list[_WikiFileUpload]
+
+
+class IndexFilesResponse(BaseModel):
+    corpus_id: str
+    doc_count: int
+    duration_ms: int
+
+
+class WikiHit(BaseModel):
+    ref_id: str
+    title: str
+    score: float
+    # AC3 trust fields.
+    source_path: str
+    evidence_span: str
+    match_offsets: list[list[int]]
+    coverage: float
+    contributing_terms: list[str]
+    mtime: int
+
+
+class WikiSearchResponse(BaseModel):
+    query: str
+    corpus_id: str
+    top_k: int
+    results: list[WikiHit]
+
+
+class QaBody(BaseModel):
+    corpus_id: str
+    query: str
+    top_k: int = 5
+
+
+class SentenceScore(BaseModel):
+    sentence: str
+    cited_refs: list[str]
+    unresolved_refs: list[str]
+    score: float
+    matched_tokens: int
+    sentence_tokens: int
+    evidence_tokens: int
+
+
+class QaResponse(BaseModel):
+    query: str
+    corpus_id: str
+    answer: str
+    overall_groundedness: float
+    sentences: list[SentenceScore]
+    hits: list[WikiHit]
+
+
+@app.post("/v1/wiki/index-files", response_model=IndexFilesResponse)
+def index_files(
+    body: IndexFilesBody,
+    principal_id: str = Depends(require_principal),
+) -> IndexFilesResponse:
+    """Accept the browser-uploaded {path, content, mtime} list, write
+    them to a temp dir, and build a WikiRagAdapter. Returns corpus_id.
+
+    Path validation: rejects absolute paths and any path containing
+    `..` segments. The browser can technically read anywhere on the
+    user's filesystem once the OS picker is approved; the server still
+    refuses to write outside the temp dir even if the client is buggy
+    or malicious.
+    """
+    import time as _time
+
+    started = _time.monotonic()
+    files_payload = [
+        {"path": f.path, "content": f.content, "mtime": f.mtime}
+        for f in body.files
+    ]
+    try:
+        corpus_id, _work_dir, doc_count = wiki_corpus.index_uploaded_files(
+            files_payload
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    duration_ms = int((_time.monotonic() - started) * 1000)
+    log.info(
+        "wiki index: principal=%s corpus_id=%s doc_count=%d files=%d duration_ms=%d",
+        principal_id, corpus_id, doc_count, len(files_payload), duration_ms,
+    )
+    return IndexFilesResponse(
+        corpus_id=corpus_id,
+        doc_count=doc_count,
+        duration_ms=duration_ms,
+    )
+
+
+@app.get("/v1/wiki/search", response_model=WikiSearchResponse)
+def wiki_search_endpoint(
+    corpus_id: str,
+    q: str,
+    top_k: int = 5,
+    principal_id: str = Depends(require_principal),
+) -> WikiSearchResponse:
+    """TF-IDF search scoped to `corpus_id`. Returns AC3 trust fields
+    on every hit. 404 if the corpus_id is unknown (evicted from LRU
+    or never existed)."""
+    effective_top_k = max(1, min(top_k, 20))
+    try:
+        hits = wiki_corpus.search(corpus_id, q, top_k=effective_top_k)
+    except wiki_corpus.UnknownCorpusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"corpus_id not found: {exc.corpus_id}",
+        ) from exc
+    return WikiSearchResponse(
+        query=q,
+        corpus_id=corpus_id,
+        top_k=effective_top_k,
+        results=[WikiHit(**h.to_dict()) for h in hits],
+    )
+
+
+@app.post("/v1/wiki/qa", response_model=QaResponse)
+def wiki_qa(
+    body: QaBody,
+    principal_id: str = Depends(require_principal),
+) -> QaResponse:
+    """Search + LLM answer + per-sentence groundedness.
+
+    The LLM is prompted to ground every claim with a `[ref_id]`
+    citation. Each sentence is then scored by sentence-token recall
+    over the union of its cited evidence — the AC3 metric.
+    """
+    import time as _time
+
+    started = _time.monotonic()
+    # 1. Search the corpus for top-k evidence.
+    try:
+        hits = wiki_corpus.search(body.corpus_id, body.query, top_k=body.top_k)
+    except wiki_corpus.UnknownCorpusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"corpus_id not found: {exc.corpus_id}",
+        ) from exc
+
+    # 2. Build an evidence map keyed by ref_id so the groundedness
+    #    scorer can resolve `[ref-x]` citations to their text.
+    entry = wiki_corpus.get_registry().get(body.corpus_id)
+    evidence_map: dict[str, str] = {}
+    for h in hits:
+        try:
+            evidence_map[h.ref_id] = entry.adapter.read_evidence(h.ref_id, limit=2000)
+        except Exception:  # noqa: BLE001
+            evidence_map[h.ref_id] = ""
+
+    # 3. Compose the prompt. Force `[ref_id]` citations by example and
+    #    require a refusal if no relevant evidence was found.
+    if not hits:
+        return QaResponse(
+            query=body.query,
+            corpus_id=body.corpus_id,
+            answer=(
+                "I could not find relevant evidence in the picked wiki "
+                "directory for that question."
+            ),
+            overall_groundedness=0.0,
+            sentences=[],
+            hits=[],
+        )
+
+    evidence_blob = "\n\n--\n\n".join(
+        f"[{h.ref_id}] (source: {h.source_path}, score: {h.score:.3f})\n"
+        f"{evidence_map[h.ref_id]}"
+        for h in hits
+    )
+    prompt = (
+        "You are an OSS-maintainer assistant. Answer the question using "
+        "ONLY the evidence below. Cite every claim with a bracketed "
+        "[ref_id] matching one of the evidence entries. If the evidence "
+        "does not support a claim, refuse explicitly rather than guessing.\n\n"
+        f"Question: {body.query}\n\n## Evidence\n\n{evidence_blob}\n\n## Answer\n"
+    )
+
+    settings = get_settings()
+    adapter = make_adapter(settings)
+    try:
+        chat = adapter.chat([{"role": "user", "content": prompt}])
+        answer = (chat.content or "").strip()
+    finally:
+        adapter.close()
+
+    # 4. Per-sentence groundedness.
+    scores = groundedness.groundedness_for_answer(answer, evidence_map)
+    overall = groundedness.answer_overall_groundedness(scores)
+    duration_ms = int((_time.monotonic() - started) * 1000)
+    log.info(
+        "wiki qa: principal=%s corpus_id=%s hits=%d sentences=%d "
+        "overall=%.3f duration_ms=%d",
+        principal_id, body.corpus_id, len(hits), len(scores), overall,
+        duration_ms,
+    )
+    return QaResponse(
+        query=body.query,
+        corpus_id=body.corpus_id,
+        answer=answer,
+        overall_groundedness=overall,
+        sentences=[SentenceScore(**s.to_dict()) for s in scores],
+        hits=[WikiHit(**h.to_dict()) for h in hits],
     )
