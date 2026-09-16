@@ -304,30 +304,50 @@ def fact_supported(
     claim: str,
     evidence_map: dict[str, str],
     cited_refs: list[str],
-) -> bool:
-    """True iff every token in the claim also appears in the union of
-    its cited evidence's text.
+) -> float:
+    """Jaccard-style overlap (|claim ∩ evidence| / |claim|), 0..1.
 
-    Resolved citations only -- `[1]` whose entry is missing from
-    `evidence_map` contributes zero tokens, matching the same convention
-    as Citation Precision (Honovich 2022)."""
+    NOT a strict subset. Strict subset ("every claim token must appear
+    in evidence") returns 0/1 = 0 for any paraphrased answer, even a
+    correct one -- useless as a real-world signal because LLMs almost
+    always paraphrase at least a few words.
+
+    Jaccard-token-overlap (this implementation) shares the same
+    dependency-light property as the proxy in the Maynez 2020
+    follow-up literature (Goodrich et al., 2019) but gives partial
+    credit for partial support, so the dashboard shows variation
+    between turns -- a paraphrase gets ~0.5-0.7, a fully supported
+    claim gets 1.0, a fabrication (different vocab) gets ~0.0-0.1.
+
+    Resolved citations only -- unresolved refs contribute zero
+    tokens, matching the Citation Precision convention.
+
+    Returns 0.0 for: no cited refs; no tokens in the claim after
+    stripping (pure-punctuation); or empty evidence_map.
+    """
     if not cited_refs:
-        return False
+        return 0.0
     claim_tokens = set(_strip_citations_for_support(claim))
     if not claim_tokens:
-        # Empty after stripping (pure punctuation or all citation
-        # markers) -- claim has no concrete content to verify.
-        return False
+        return 0.0
     evidence_tokens: set[str] = set()
     for ref in cited_refs:
         text = evidence_map.get(ref)
         if not text:
             continue
         evidence_tokens.update(_strip_citations_for_support(text))
-    return claim_tokens.issubset(evidence_tokens)
+    if not evidence_tokens:
+        return 0.0
+    # Jaccard: |A ∩ B| / |A|, NOT |A ∩ B| / |A ∪ B|. We use precision-
+    # style overlap (intersection / |claim|) so a small claim that
+    # shares all its tokens with a large evidence block still scores
+    # 1.0; a large claim sharing few tokens scores low. This matches
+    # the intuition "how much of the claim is in evidence?".
+    overlap = len(claim_tokens & evidence_tokens)
+    return overlap / len(claim_tokens)
 
 
-def _sentence_faithful(claim: str, cited_refs: list[str], evidence_map: dict[str, str]) -> bool:
+def _sentence_faithful(claim: str, cited_refs: list[str], evidence_map: dict[str, str]) -> float:
     return fact_supported(claim, evidence_map, cited_refs)
 
 
@@ -346,19 +366,20 @@ def answer_faithfulness(
     question: "is this claim supported?" not "did the model cite
     anything?". A free-floating unsupported claim IS a problem.
 
-    Pure-punctuation sentences (no concrete tokens after stripping)
-    contribute 0/0 -- faithfulness is undefined for them and returning
-    NaN/divide-by-zero would be a worse failure mode."""
+    The "supported" score per sentence is the Jaccard token overlap
+    (see `fact_supported` docstring) so a paraphrase scores 0.5-0.7
+    rather than 0 -- the dashboard will show real variation across
+    turns instead of an always-zero line."""
     if not scores:
         return 0.0
-    supported = 0
+    supported_total = 0.0
     total = 0
     for s in scores:
         atoms = extract_atomic_facts(s.sentence)
         for atom in atoms:
             total += 1
-            if s.cited_refs and _sentence_faithful(atom, s.cited_refs, evidence_map):
-                supported += 1
+            if s.cited_refs:
+                supported_total += _sentence_faithful(atom, s.cited_refs, evidence_map)
     if total == 0:
         return 0.0
-    return supported / total
+    return supported_total / total

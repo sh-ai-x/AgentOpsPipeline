@@ -40,52 +40,78 @@ from agentops_workbench.groundedness import (
 )
 
 
-def test_fact_supported_when_every_token_appears_in_evidence() -> None:
+def test_fact_supported_full_overlap_returns_one() -> None:
+    """Every claim token also appears in evidence -> overlap/claim = 1.0."""
     evidence_map = {
         "ref-a": "LangGraph checkpointing persists graph state via Postgres.",
     }
-    # Every token in the claim is also in the evidence -> supported.
-    assert fact_supported(
+    score = fact_supported(
         "LangGraph checkpointing via Postgres.",
         evidence_map,
         cited_refs=["ref-a"],
-    ) is True
+    )
+    assert score == pytest.approx(1.0)
 
 
-def test_fact_unsupported_when_tokens_absent_from_evidence() -> None:
+def test_fact_unsupported_when_no_claim_token_matches() -> None:
+    """No claim token appears in the evidence -> 0.0 overlap."""
     evidence_map = {
-        "ref-a": "LangGraph checkpointing persists graph state.",
+        "ref-a": "Postgres saves checkpoints to durable storage.",
     }
-    # "MongoDB" never appears in the evidence -> unsupported.
-    assert fact_supported(
-        "LangGraph uses MongoDB for storage.",
+    score = fact_supported(
+        "MongoDB clusters horizontally with replica sets.",
         evidence_map,
         cited_refs=["ref-a"],
-    ) is False
+    )
+    assert score == 0.0
+
+
+def test_fact_partial_credit_when_some_tokens_match() -> None:
+    """Some (not all) claim tokens appear in the evidence -> 0 < score < 1.
+
+    The previous strict-subset test asserted 0.0 here; the Jaccard proxy
+    gives partial credit so the dashboard shows real variation
+    between paraphrased and fabricated answers."""
+    evidence_map = {
+        "ref-a": "Postgres saves checkpoints to durable storage.",
+    }
+    # Claim tokens: postgres, persists, checkpoints, to, storage (5).
+    # Evidence tokens: postgres, saves, checkpoints, to, durable,
+    #   storage (6).
+    # Overlap = {postgres, checkpoints, to, storage} = 4.
+    # Score = 4 / 5 = 0.8.
+    score = fact_supported(
+        "Postgres persists checkpoints to storage.",
+        evidence_map,
+        cited_refs=["ref-a"],
+    )
+    assert score == pytest.approx(0.8)
 
 
 def test_fact_unsupported_when_no_evidence_at_all() -> None:
-    """A claim with no cited refs has nothing to be supported by."""
+    """No cited refs at all -> 0.0 (no evidence to check against)."""
     assert fact_supported(
         "Anything at all.",
         evidence_map={},
         cited_refs=[],
-    ) is False
+    ) == 0.0
 
 
 def test_fact_supported_uses_union_of_cited_evidence() -> None:
-    """Two citations, each contributing some tokens, both required
-    to support the full claim."""
+    """Two citations, each contributing some tokens; the support
+    check pools both into one evidence set."""
     evidence_map = {
         "ref-a": "LangGraph uses state machines.",
         "ref-b": "checkpointing persists state across crashes.",
     }
-    assert fact_supported(
+    score = fact_supported(
         "LangGraph uses state machines; checkpointing persists "
         "state across crashes.",
         evidence_map,
         cited_refs=["ref-a", "ref-b"],
-    ) is True
+    )
+    # Every claim token is in the union of the two -> 1.0
+    assert score == pytest.approx(1.0)
 
 
 def test_fact_supported_ignores_unresolved_refs() -> None:
@@ -97,12 +123,12 @@ def test_fact_supported_ignores_unresolved_refs() -> None:
     }
     # "ref-bogus" isn't in evidence_map; tokens from the evidence for
     # "ref-bogus" (i.e. "") should not contribute. Claim contains "uses
-    # MongoDB" which is NOT in the only real evidence -> unsupported.
+    # MongoDB" which is NOT in the only real evidence -> 0.0.
     assert fact_supported(
         "LangGraph uses MongoDB. [ref-bogus]",
         evidence_map,
         cited_refs=["ref-bogus"],
-    ) is False
+    ) == 0.0
 
 
 def test_extract_atomic_facts_splits_on_sentence_boundaries() -> None:
@@ -134,17 +160,24 @@ def test_extract_atomic_facts_returns_empty_for_empty_input() -> None:
 
 
 def test_answer_faithfulness_one_supported_one_unsupported() -> None:
-    """The headline behavior: an answer with one supported + one
-    unsupported fact should score ~0.5 on faithfulness."""
+    """The headline behavior: an answer with one fully-supported + one
+    unsupported fact should score the mean of their per-sentence
+    Jaccard-token-overlap scores.
+
+    Sentence 1 ("LangGraph checkpointing persists state.") shares
+    every claim token with the evidence -> 1.0.
+    Sentence 2 ("MongoDB clusters horizontally.") cites a bogus ref ->
+    no resolved evidence -> 0.0.
+    Mean = 0.5.
+    """
     scores = [
-        # Sentence 1: supported (every token in evidence).
         GroundednessScore(
             sentence="LangGraph checkpointing persists state.",
             cited_refs=["ref-a"],
             unresolved_refs=[],
             rouge_l_f1=1.0,
         ),
-        # Sentence 2: cites a bogus ref -> no evidence -> unsupported.
+        # Sentence 2 cites a bogus ref -> no evidence -> 0.0
         GroundednessScore(
             sentence="MongoDB clusters horizontally.",
             cited_refs=[],

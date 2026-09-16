@@ -584,8 +584,11 @@ export default function HomePageImpl() {
                     )}
 
                     {m.hits.length > 0 && (
-                      <details className="chat-detail">
-                        <summary>Sources ({m.hits.length})</summary>
+                      <details
+                        className="chat-detail references-tab"
+                        open
+                      >
+                        <summary>References ({m.hits.length})</summary>
                         {m.hits.slice(0, 5).map((h, j) => (
                           <article className="hit" key={`chat-${i}-${h.ref_id}-${j}`}>
                             <div className="hit-title">
@@ -595,14 +598,20 @@ export default function HomePageImpl() {
                                   href={h.obsidian_uri}
                                   target="_blank"
                                   rel="noreferrer"
-                                  title="Open in Obsidian vault"
+                                  title={`Open in Obsidian vault — ${h.source_path}`}
                                 >
                                   <code>{h.source_path}</code> — <em>{h.ref_id}</em>
                                 </a>
                               ) : (
-                                <>
+                                <a
+                                  className="hit-link"
+                                  href={`file:///${h.source_path}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={`Open ${h.source_path}`}
+                                >
                                   <code>{h.source_path}</code> — <em>{h.ref_id}</em>
-                                </>
+                                </a>
                               )}
                             </div>
                             <div className="hit-meta">

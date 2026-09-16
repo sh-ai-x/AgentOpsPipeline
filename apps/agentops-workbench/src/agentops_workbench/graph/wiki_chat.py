@@ -219,14 +219,12 @@ def _answer_node(state: _WikiChatState, config: RunnableConfig) -> dict[str, Any
     # whether the LLM cited them.
     faithful = groundedness.answer_faithfulness(scores, score_input)
 
-    answer_with_refs = f"{raw_answer}\n\n---\nReferences:\n{make_references_block(hits)}"
-
     new_turns = [
         {"role": "user", "content": query},
         {"role": "assistant", "content": raw_answer},
     ]
     return {
-        "answer": answer_with_refs,
+        "answer": raw_answer,
         "sentences": [s.to_dict() for s in scores],
         "overall_rouge_l_f1": overall_rouge_l,
         "citation_recall": cit_recall,

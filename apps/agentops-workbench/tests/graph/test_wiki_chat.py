@@ -138,28 +138,42 @@ def test_run_wiki_chat_short_circuits_when_no_evidence(corpus_id: str) -> None:
     assert turn.citation_recall == 0.0
 
 
-def test_answer_has_references_block_with_one_line_per_hit(corpus_id: str) -> None:
-    """The deterministic References list maps each footnote number
-    back to its real source_path. Never LLM-generated."""
+def test_answer_returns_llm_text_only_no_appended_references_footer(corpus_id: str) -> None:
+    """The backend does not append a References footer to the answer
+    anymore -- the frontend owns references (built from `turn.hits`).
+    This test pins the new contract: the LLM's prose comes back
+    verbatim, with the [1] markers the LLM chose to emit (the
+    frontend will render those markers in a separate tab, not in
+    the chat bubble body)."""
     adapter = _StubAdapter(["Answer cites evidence. [1]"])
     turn = run_wiki_chat(adapter, corpus_id, "checkpointing", thread_id="t-refs")
-    assert "References:" in turn.answer
-    assert "[1] checkpointing.md" in turn.answer
-    # The cited claim must appear before the references list.
-    assert turn.answer.index("Answer cites evidence") < turn.answer.index("References:")
+    assert "Answer cites evidence" in turn.answer
+    assert "[1]" in turn.answer, (
+        "the LLM's numbered citations come through verbatim; the "
+        "frontend will route them to a separate References tab"
+    )
+    # Server must NOT append a References footer -- that's a
+    # frontend concern now.
+    assert "References:" not in turn.answer, (
+        "the server should pass through only the LLM's text; the "
+        "References block is rendered by the frontend from `turn.hits`"
+    )
 
 
-def test_references_block_lists_every_retrieved_hit_not_only_cited_ones(corpus_id: str) -> None:
-    """For transparency: even uncited hits must appear in References
-    so the reviewer can see what the LLM chose not to cite."""
-    adapter = _StubAdapter(["Only cited the first. [1]"])
+def test_hits_carry_per_hit_metadata_for_frontend_references_tab(corpus_id: str) -> None:
+    """The frontend builds its References tab from `turn.hits`. Each
+    hit must carry source_path + obsidian_uri (when an Obsidian vault
+    was used at upload time) so the frontend can render an actual
+    link, not just a label."""
+    adapter = _StubAdapter(["Cites the first. [1]"])
     turn = run_wiki_chat(adapter, corpus_id, "checkpointing rate limits", thread_id="t-multi")
-    # Both docs match; both appear in the References block. The
-    # numbering is by retrieval order (score), which the LLM can see
-    # in the prompt -- but the assertion here just checks both are
-    # present, not which one is [1] vs [2].
-    assert "[1] checkpointing.md" in turn.answer or "[2] checkpointing.md" in turn.answer
-    assert "[1] rate-limits.md" in turn.answer or "[2] rate-limits.md" in turn.answer
+    # Both docs match the query; both appear in `turn.hits` for the
+    # frontend's References tab to render. The order is by retrieval
+    # score, so we don't assert which is [1] vs [2] -- only that both
+    # are present.
+    paths = {h["source_path"] for h in turn.hits}
+    assert "checkpointing.md" in paths
+    assert "rate-limits.md" in paths
 
 
 def test_follow_up_history_excludes_the_references_block(corpus_id: str) -> None:
