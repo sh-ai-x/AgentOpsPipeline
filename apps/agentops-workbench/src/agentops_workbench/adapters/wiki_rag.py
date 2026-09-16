@@ -43,6 +43,108 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 # the matching setting) when a larger corpus is genuinely warranted.
 MAX_WIKI_DOCS = 4096
 
+# Directory names skipped when walking wiki_dir recursively. The walk is
+# generic across Obsidian vaults and arbitrary ~/dev/mywiki-style exports,
+# so we exclude the metadata / VCS / cache dirs that routinely appear in
+# such trees and would either bloat the index or pull in non-content
+# (e.g. `.obsidian/workspace.json`, `.git/HEAD`, `node_modules/README.md`).
+# `_flat` is oss-helper's flattened-docs staging dir — content there is
+# already merged by the upstream acquisition step, so re-indexing it
+# would double-count.
+#
+# Any directory whose name starts with `.` is also skipped — Obsidian
+# plugin metadata (`.obsidian/`, `.metagraph/`, `.trash/`) and copies of
+# other projects' `.worktrees/` clones live there, not wiki content.
+# Users who actually want a `.archive/` directory indexed can rename it.
+SKIP_DIR_NAMES: frozenset[str] = frozenset({
+    ".git",
+    ".hg",
+    ".svn",
+    ".obsidian",
+    ".dev-kit",
+    ".claude",
+    ".codex",
+    ".serena",
+    ".gemini",
+    ".metagraph",
+    ".trash",
+    ".worktrees",
+    ".venv",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".idea",
+    ".vscode",
+    "__pycache__",
+    "node_modules",
+    "_flat",
+})
+
+
+def _is_skipped_dir(part: str) -> bool:
+    """True if a directory component should be skipped during the walk.
+
+    Explicit list (SKIP_DIR_NAMES) is checked first; then the blanket
+    rule — any name starting with `.` is skipped. This catches plugin
+    metadata dirs (`.metagraph/`, `.trash/`, ...) that aren't enumerated
+    explicitly above and protects against future unknown dot-directories
+    leaking into the index.
+    """
+    if part in SKIP_DIR_NAMES:
+        return True
+    if part.startswith("."):
+        return True
+    return False
+
+
+def collect_wiki_files(wiki_dir: Path) -> dict[str, Path]:
+    """Walk `wiki_dir` recursively for `.md` files and return {ref_id: path}.
+
+    Generic across layouts: a flat `~/dev/mywiki/*.md` tree and an Obsidian
+    vault with nested category subdirs (e.g. `wiki/<domain>/<slug>.md`)
+    both work. Junk directories — anything in `SKIP_DIR_NAMES` or starting
+    with `.` — are skipped along with hidden files.
+
+    ref_id contract:
+      - Files directly at `wiki_dir` root  ->  `f.stem`  (back-compat:
+        existing tests + oss-helper's `_flat` layout rely on this).
+      - Files nested in subdirs            ->  `__`-joined path with the
+        suffix stripped, e.g. `langgraph/checkpointing.md` becomes
+        `langgraph__checkpointing`.
+
+    On ref_id collision (two files with the same stem inside the same dir
+    is impossible on POSIX, but cross-dir collisions are real), the second
+    occurrence gets a `__N` suffix so every file stays reachable.
+    """
+    if not wiki_dir.exists() or not wiki_dir.is_dir():
+        return {}
+    out: dict[str, Path] = {}
+    for path in sorted(wiki_dir.rglob("*.md")):
+        try:
+            rel = path.relative_to(wiki_dir)
+        except ValueError:
+            continue
+        # Skip when any directory component of the relative path is junk.
+        # The trailing component is the filename itself, not a dir.
+        if any(_is_skipped_dir(part) for part in rel.parts[:-1]):
+            continue
+        # Skip hidden files at the root (`.foo.md`).
+        if path.name.startswith("."):
+            continue
+        # Compute a stable ref_id.
+        if len(rel.parts) == 1:
+            ref_id = path.stem
+        else:
+            ref_id = "__".join(rel.with_suffix("").parts)
+        # Resolve collisions deterministically.
+        if ref_id in out:
+            n = 2
+            while f"{ref_id}__{n}" in out:
+                n += 1
+            ref_id = f"{ref_id}__{n}"
+        out[ref_id] = path
+    return out
+
 
 def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
@@ -72,9 +174,9 @@ class WikiRagAdapter:
 
     def __init__(self, wiki_dir: str) -> None:
         self._wiki_dir = wiki_dir
-        self._files: dict[str, Path] = {
-            f.stem: f for f in sorted(Path(wiki_dir).glob("*.md"))
-        }
+        # Generic across Obsidian vaults and arbitrary ~/dev/mywiki-style
+        # exports: walk recursively, skip junk dirs (see SKIP_DIR_NAMES).
+        self._files: dict[str, Path] = collect_wiki_files(Path(wiki_dir))
         if len(self._files) > MAX_WIKI_DOCS:
             raise MCPError(
                 "unsupported_capability",
