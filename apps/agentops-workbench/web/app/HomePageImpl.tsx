@@ -47,6 +47,20 @@ type QaResponse = {
   hits: Hit[];
 };
 
+// One turn in the chat transcript. Each assistant turn carries the
+// metrics + per-sentence grounding the operator can drill into.
+type ChatMessage =
+  | { role: "user"; content: string }
+  | {
+      role: "assistant";
+      content: string;
+      hits: Hit[];
+      sentences: SentenceScore[];
+      overall_rouge_l_f1: number;
+      citation_recall: number;
+      citation_precision: number;
+    };
+
 type IndexResponse = {
   corpus_id: string;
   doc_count: number;
@@ -248,13 +262,17 @@ export default function HomePageImpl() {
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(5);
   const [hits, setHits] = useState<Hit[] | null>(null);
-  // QA state.
-  const [qaQuery, setQaQuery] = useState("");
-  const [qaResp, setQaResp] = useState<QaResponse | null>(null);
-  // Server-minted thread_id for multi-turn chat. Persisted across calls
-  // so a follow-up turn resumes the prior conversation by thread_id,
-  // not by retransmitting the transcript.
-  const [qaThreadId, setQaThreadId] = useState<string | null>(null);
+  // Chat state -- multi-turn transcript.
+  // `messages` holds the full conversation so the operator can scroll
+  // back through prior turns; `chatInput` is the unsent draft. `threadId`
+  // is server-minted on the first turn and threaded through every
+  // follow-up so the LangGraph checkpointer
+  // (`graph/wiki_chat.py`) restores conversation history on the
+  // server side. Picking a new directory resets the conversation.
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const [expandedTurns, setExpandedTurns] = useState<Set<number>>(new Set());
 
   const authHeaders = useCallback(
     (): Record<string, string> => (bearer ? { Authorization: `Bearer ${bearer}` } : {}),
@@ -339,8 +357,11 @@ export default function HomePageImpl() {
       setDocCount(idx.doc_count);
       setIndexDurationMs(idx.duration_ms);
       setHits(null);
-      setQaResp(null);
-      setQaThreadId(null);
+      // Picking a new directory resets the conversation -- a fresh
+      // corpus is a fresh thread.
+      setMessages([]);
+      setChatInput("");
+      setThreadId(null);
     } catch (err) {
       const e = err as Error & { name?: string };
       if (e.name === "AbortError") {
@@ -379,32 +400,51 @@ export default function HomePageImpl() {
     }
   }
 
-  // ----- AC3: QA mode with per-sentence attribution metrics -----
-  async function onAsk(e: React.FormEvent) {
+  // ----- AC3: Chat (multi-turn, threaded via LangGraph checkpointer) -----
+  async function onSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!qaQuery.trim() || !bearer || !corpusId) return;
+    const text = chatInput.trim();
+    if (!text || !bearer || !corpusId || busy) return;
     setBusy(true);
     setError(null);
-    // Multi-turn: keep the server-minted `thread_id` from the prior
-    // answer and send it back. The LangGraph checkpointer
-    // (`graph/wiki_chat.py`) restores the conversation `history`
-    // server-side for that thread_id; we never resend the transcript.
-    // Picking a new directory resets the conversation (no thread_id).
+    // Optimistically append the user turn so the UI updates immediately,
+    // then post the question to the server. thread_id is sent only
+    // when we already have one (i.e. this isn't the first turn) -- the
+    // server mints one on the first call and echoes it back; we
+    // thread it on every follow-up. The client never resends the
+    // transcript; the LangGraph MemorySaver in `graph/wiki_chat.py`
+    // restores the conversation history server-side.
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: text },
+    ]);
+    setChatInput("");
     try {
       const r = await fetch("/api/v1/wiki/qa", {
         method: "POST",
         headers: { ...authHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({
           corpus_id: corpusId,
-          query: qaQuery,
+          query: text,
           top_k: topK,
-          ...(qaThreadId ? { thread_id: qaThreadId } : {}),
+          ...(threadId ? { thread_id: threadId } : {}),
         }),
       });
       if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
       const data = (await r.json()) as QaResponse;
-      setQaResp(data);
-      setQaThreadId(data.thread_id);
+      setThreadId(data.thread_id);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: data.answer,
+          hits: data.hits,
+          sentences: data.sentences,
+          overall_rouge_l_f1: data.overall_rouge_l_f1,
+          citation_recall: data.citation_recall,
+          citation_precision: data.citation_precision,
+        },
+      ]);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -530,118 +570,166 @@ export default function HomePageImpl() {
           </section>
 
           <section className="card">
-            <h2>3. Ask with groundedness</h2>
+            <h2>3. Chat (multi-turn)</h2>
             <MetricsGuide topic="qa" />
-            <form onSubmit={onAsk} className="search-row">
+            <p className="muted" style={{ marginTop: -4 }}>
+              Each follow-up question uses the prior turn's context
+              (the server keeps the conversation via a LangGraph
+              checkpointer; the client only ever sends a single
+              opaque <code>thread_id</code>). Picking a new directory
+              starts a fresh conversation.
+            </p>
+
+            <div className="chat-thread">
+              {messages.length === 0 && (
+                <p className="status">
+                  Ask a question below — top-{topK} evidence is
+                  retrieved fresh each turn, and the assistant
+                  remembers what you've already asked.
+                </p>
+              )}
+              {messages.map((m, i) =>
+                m.role === "user" ? (
+                  <div className="chat-turn user" key={i}>
+                    <div className="chat-bubble">{m.content}</div>
+                  </div>
+                ) : (
+                  <div className="chat-turn assistant" key={i}>
+                    <p className="overall" style={{ marginBottom: 8 }}>
+                      <strong>ROUGE-L F1</strong>
+                      <span className="badge" style={{ backgroundColor: groundednessColor(m.overall_rouge_l_f1) }}>
+                        {(m.overall_rouge_l_f1 * 100).toFixed(0)}%
+                      </span>
+                      <strong style={{ marginLeft: 16 }}>Citation Recall</strong>
+                      <span className="badge" style={{ backgroundColor: groundednessColor(m.citation_recall) }}>
+                        {(m.citation_recall * 100).toFixed(0)}%
+                      </span>
+                      <strong style={{ marginLeft: 16 }}>Citation Precision</strong>
+                      <span className="badge" style={{ backgroundColor: groundednessColor(m.citation_precision) }}>
+                        {(m.citation_precision * 100).toFixed(0)}%
+                      </span>
+                    </p>
+                    <div className="chat-bubble answer">{m.content}</div>
+
+                    {m.sentences.length > 0 && (
+                      <details
+                        className="chat-detail"
+                        open={expandedTurns.has(i)}
+                        onToggle={(e) => {
+                          const open = (e.target as HTMLDetailsElement).open;
+                          setExpandedTurns((prev) => {
+                            const next = new Set(prev);
+                            if (open) next.add(i);
+                            else next.delete(i);
+                            return next;
+                          });
+                        }}
+                      >
+                        <summary>Per-sentence grounding ({m.sentences.length})</summary>
+                        {m.sentences.map((s, j) => (
+                          <div
+                            key={j}
+                            className="sentence"
+                            style={{ borderLeft: `4px solid ${groundednessColor(s.rouge_l_f1)}` }}
+                          >
+                            <div className="sentence-header">
+                              <span className="badge" style={{ backgroundColor: groundednessColor(s.rouge_l_f1) }}>
+                                ROUGE-L F1 {(s.rouge_l_f1 * 100).toFixed(0)}%
+                              </span>
+                              <span className="muted" title="Precision = LCS ÷ sentence tokens. Recall = LCS ÷ evidence tokens.">
+                                P={(s.rouge_l_precision * 100).toFixed(0)}% · R={(s.rouge_l_recall * 100).toFixed(0)}%
+                              </span>
+                              <span className="muted" title="Longest Common Subsequence length, out of the sentence's own token count.">
+                                LCS={s.lcs_length}/{s.sentence_tokens} tokens
+                              </span>
+                              {s.cited_refs.length > 0 && (
+                                <span className="muted">
+                                  cites: {s.cited_refs.map((r) => `[${r}]`).join(" ")}
+                                </span>
+                              )}
+                              {s.unresolved_refs.length > 0 && (
+                                <span className="muted" style={{ color: "#dc2626" }}>
+                                  unresolved: {s.unresolved_refs.map((r) => `[${r}]`).join(" ")}
+                                </span>
+                              )}
+                            </div>
+                            <div>{s.sentence}</div>
+                          </div>
+                        ))}
+                      </details>
+                    )}
+
+                    {m.hits.length > 0 && (
+                      <details className="chat-detail">
+                        <summary>Sources ({m.hits.length})</summary>
+                        {m.hits.slice(0, 5).map((h, j) => (
+                          <article className="hit" key={`chat-${i}-${h.ref_id}-${j}`}>
+                            <div className="hit-title">
+                              {h.obsidian_uri ? (
+                                <a
+                                  className="hit-link"
+                                  href={h.obsidian_uri}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title="Open in Obsidian vault"
+                                >
+                                  <code>{h.source_path}</code> — <em>{h.ref_id}</em>
+                                </a>
+                              ) : (
+                                <>
+                                  <code>{h.source_path}</code> — <em>{h.ref_id}</em>
+                                </>
+                              )}
+                            </div>
+                            <div className="hit-meta">
+                              <span className="metric">
+                                score <strong>{h.score.toFixed(3)}</strong>
+                              </span>
+                              <span className="metric-sep">·</span>
+                              <span
+                                className="metric"
+                                style={{ color: groundednessColor(h.coverage) }}
+                              >
+                                coverage <strong>{(h.coverage * 100).toFixed(0)}%</strong>
+                              </span>
+                              <span className="metric-sep">·</span>
+                              <span className="metric muted">
+                                mtime {new Date(h.mtime).toISOString().slice(0, 19)}
+                              </span>
+                            </div>
+                          </article>
+                        ))}
+                      </details>
+                    )}
+                  </div>
+                ),
+              )}
+            </div>
+
+            <form onSubmit={onSend} className="search-row">
               <input
-                placeholder="ask a question (the LLM will cite each claim)"
-                value={qaQuery}
-                onChange={(e) => setQaQuery(e.target.value)}
+                placeholder="ask a follow-up (the assistant remembers the prior turn)"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
               />
-              <button type="submit" className="primary" disabled={busy || !qaQuery.trim()}>
-                {busy ? "..." : "Ask"}
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={topK}
+                onChange={(e) => setTopK(Math.max(1, Math.min(20, Number(e.target.value) || 5)))}
+                style={{ flex: "0 0 72px" }}
+                title="top_k: how many documents to retrieve per turn"
+              />
+              <button type="submit" className="primary" disabled={busy || !chatInput.trim()}>
+                {busy ? "..." : "Send"}
               </button>
             </form>
-
-            {qaResp && (
-              <div className="qa">
-                <p className="overall">
-                  <strong>ROUGE-L F1</strong>
-                  <span
-                    className="badge"
-                    style={{ backgroundColor: groundednessColor(qaResp.overall_rouge_l_f1) }}
-                  >
-                    {(qaResp.overall_rouge_l_f1 * 100).toFixed(0)}%
-                  </span>
-                  <strong style={{ marginLeft: 16 }}>Citation Recall</strong>
-                  <span
-                    className="badge"
-                    style={{ backgroundColor: groundednessColor(qaResp.citation_recall) }}
-                  >
-                    {(qaResp.citation_recall * 100).toFixed(0)}%
-                  </span>
-                  <strong style={{ marginLeft: 16 }}>Citation Precision</strong>
-                  <span
-                    className="badge"
-                    style={{ backgroundColor: groundednessColor(qaResp.citation_precision) }}
-                  >
-                    {(qaResp.citation_precision * 100).toFixed(0)}%
-                  </span>
-                </p>
-                <p className="muted" style={{ marginTop: -8 }}>
-                  ROUGE-L F1 (Lin 2004): sentence ↔ cited evidence overlap. Citation Recall + Precision (Honovich 2022): are claims cited, and are the citations real?
-                </p>
-                <div className="answer">{qaResp.answer}</div>
-
-                <h3>Per-sentence breakdown</h3>
-                {qaResp.sentences.map((s, i) => (
-                  <div
-                    key={i}
-                    className="sentence"
-                    style={{ borderLeft: `4px solid ${groundednessColor(s.rouge_l_f1)}` }}
-                  >
-                    <div className="sentence-header">
-                      <span
-                        className="badge"
-                        style={{ backgroundColor: groundednessColor(s.rouge_l_f1) }}
-                      >
-                        ROUGE-L F1 {(s.rouge_l_f1 * 100).toFixed(0)}%
-                      </span>
-                      <span className="muted" title="Precision = LCS ÷ sentence tokens. Recall = LCS ÷ evidence tokens.">
-                        P={(s.rouge_l_precision * 100).toFixed(0)}% · R={(s.rouge_l_recall * 100).toFixed(0)}%
-                      </span>
-                      <span className="muted" title="Longest Common Subsequence length, out of the sentence's own token count.">
-                        LCS={s.lcs_length}/{s.sentence_tokens} tokens
-                      </span>
-                      {s.cited_refs.length > 0 && (
-                        <span className="muted">
-                          cites: {s.cited_refs.map((r) => `[${r}]`).join(" ")}
-                        </span>
-                      )}
-                      {s.unresolved_refs.length > 0 && (
-                        <span className="muted" style={{ color: "#dc2626" }}>
-                          unresolved: {s.unresolved_refs.map((r) => `[${r}]`).join(" ")}
-                        </span>
-                      )}
-                    </div>
-                    <div>{s.sentence}</div>
-                  </div>
-                ))}
-
-                <h3>Top evidence ({qaResp.hits.length})</h3>
-                {qaResp.hits.slice(0, 3).map((h, i) => (
-                  <article className="hit" key={`qa-${h.ref_id}-${i}`}>
-                    <div className="hit-title">
-                      {h.obsidian_uri ? (
-                        <a
-                          className="hit-link"
-                          href={h.obsidian_uri}
-                          target="_blank"
-                          rel="noreferrer"
-                          title="Open in Obsidian vault"
-                        >
-                          <code>{h.source_path}</code> — <em>{h.ref_id}</em>
-                        </a>
-                      ) : (
-                        <>
-                          <code>{h.source_path}</code> — <em>{h.ref_id}</em>
-                        </>
-                      )}
-                    </div>
-                    <div className="hit-meta">
-                      score <strong>{h.score.toFixed(3)}</strong>
-                      {" · "}
-                      coverage <strong>{(h.coverage * 100).toFixed(0)}%</strong>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
           </section>
         </>
       )}
 
-      <MetricsPanel />
+      <MetricsPanel bearer={bearer} />
 
       {error && (
         <p className="status" style={{ color: "var(--accent)" }}>

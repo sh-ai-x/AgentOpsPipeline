@@ -65,7 +65,7 @@ function Bar({ value }: { value: number }) {
   );
 }
 
-export default function MetricsPanel() {
+export default function MetricsPanel({ bearer }: { bearer: string }) {
   const [data, setData] = useState<MetricsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [interval, setInterval_] = useState<PollInterval>(5);
@@ -73,9 +73,21 @@ export default function MetricsPanel() {
   useEffect(() => {
     let cancelled = false;
     async function tick() {
+      // No bearer -> waiting for auth, not an error. Real prod-mode
+      // deployments have a real login flow; this is the dev/demo path
+      // and the user's job here is just to paste a token once.
+      if (!bearer) {
+        if (!cancelled) setError("awaiting auth (paste a Bearer token)");
+        return;
+      }
       try {
-        const r = await fetch("/api/v1/wiki/metrics");
-        if (!r.ok) throw new Error(`metrics ${r.status}`);
+        const r = await fetch("/api/v1/wiki/metrics", {
+          headers: { Authorization: `Bearer ${bearer}` },
+        });
+        if (!r.ok) {
+          if (!cancelled) setError(`metrics unavailable (HTTP ${r.status})`);
+          return;
+        }
         if (cancelled) return;
         setData(await r.json());
         setError(null);

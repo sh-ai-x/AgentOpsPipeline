@@ -207,6 +207,79 @@ button:disabled {
   margin-bottom: 16px;
 }
 
+/* ---- Chat (multi-turn transcript) ---- */
+
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px 2px;
+  margin-bottom: 12px;
+}
+
+.chat-turn {
+  display: flex;
+}
+
+.chat-turn.user {
+  justify-content: flex-end;
+}
+
+.chat-turn.assistant {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.chat-bubble {
+  background: var(--code-bg);
+  border-radius: 14px 14px 4px 14px;
+  padding: 10px 14px;
+  max-width: 88%;
+  white-space: pre-wrap;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.chat-turn.user .chat-bubble {
+  background: var(--accent);
+  color: #fff;
+}
+
+.chat-turn.assistant .chat-bubble.answer {
+  border-radius: 4px 14px 14px 14px;
+  max-width: 100%;
+  background: var(--code-bg);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.chat-detail {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.chat-detail summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 500;
+  list-style: none;
+  padding: 4px 0;
+}
+
+.chat-detail summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-detail summary::before {
+  content: "▸ ";
+}
+
+.chat-detail[open] summary::before {
+  content: "▾ ";
+}
+
 .sentence {
   background: var(--bg);
   border: 1px solid var(--border);
