@@ -5,6 +5,12 @@ Endpoints (proposal §"Contracts and APIs"):
   GET  /v1/runs/{id}              -> state, evidence, last error, token usage
   POST /v1/runs/{id}/cancel       -> state -> cancelling; refuses new tool calls
   POST /v1/actions/{id}/approve   -> action-bound approval
+  POST /v1/wiki/index-files       -> upload .md files, returns corpus_id (AC1)
+  GET  /v1/wiki/search            -> TF-IDF search over a corpus, with
+                                     AC3 trust fields (source_path,
+                                     evidence_span, coverage, etc.) (AC2/AC3)
+  POST /v1/wiki/qa                -> search + LLM answer + per-sentence
+                                     groundedness (AC3)
 
 Auth: HS256 JWT (dev secret in .env). principal_id from the `sub` claim.
 """
@@ -19,6 +25,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import jwt
@@ -26,14 +33,21 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from .. import dev_metrics, oss_helper
+from .. import dev_metrics, oss_helper, wiki_corpus
 from ..db.models import Action, Run, ToolCall
 from ..db.session import session_scope
 from ..graph.state import RunState, is_terminal, make_action_key
 from ..graph.topology import run_topology
+from ..graph.wiki_chat import run_wiki_chat
 from ..llm.factory import make_adapter
 from ..mocks.tickets import TicketLedger
 from ..settings import get_settings
+from ..wiki_metrics import (
+    GroundednessRecorder,
+    GroundednessSample,
+    StageLatencyRecorder,
+    StageSample,
+)
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +66,14 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="AgentOps Workbench API", version="0.2.0", lifespan=_lifespan)
+
+# Module-level metrics aggregators. Singleton pattern matches the wiki
+# corpus registry -- process-local, lifetime = process lifetime. Tests
+# reset via `reset_for_tests()`. The 200-sample trailing window is small
+# enough that p50/p95 stays cheap to compute on every dashboard poll,
+# and large enough that the numbers don't jitter every refresh.
+search_metrics = StageLatencyRecorder(window=200)
+groundedness_metrics = GroundednessRecorder(window=200)
 
 # Single ledger instance per process. Step 6 wires DI properly.
 _ledger: TicketLedger | None = None
@@ -333,6 +355,94 @@ def cancel_run(run_id: str, principal_id: str = Depends(require_principal)) -> C
     return CancelResult(id=run_id, state=RunState.CANCELLED.value)
 
 
+# ---- Dev-mode auto-mint (Phase 9 UX fix) ----
+#
+# Without this, every request to the web UI has to carry a hand-pasted
+# JWT — an awful UX for local dev. Streamlit already has the same
+# capability gated by AGENTOPS_ALLOW_DEV_TOKEN=1; the web UI needs
+# the equivalent.
+#
+# Gate: this endpoint is ONLY served when
+#   provider == "local-fake"   (the offline fake provider)
+# AND settings.allow_dev_token is True (operator opt-in via env).
+# Production deployments with a real LLM and a real ID provider
+# never expose this — the auth path is `require_principal`.
+
+
+class DevTokenResponse(BaseModel):
+    token: str
+    principal_id: str
+    expires_in: int
+
+
+def _dev_token_allowed() -> bool:
+    """Return True iff GET /v1/auth/dev-token should be served.
+
+    Two independent gates:
+      1. `allow_dev_token` -- the original opt-in. Without it, dev-mode
+         auto-mint is off (the default).
+      2. Either `provider == "local-fake"` (the offline fake) OR
+         `dev_token_any_provider` (a deliberate second opt-in for local
+         use with a real provider).
+
+    The second gate (`dev_token_any_provider`) is deliberately separate
+    from `provider` so a real provider never silently re-enables
+    unauthenticated token-minting on its own: the operator has to set
+    BOTH flags on purpose. Without that, the original
+    provider==local-fake-only gate is unchanged -- a real deployment
+    with provider=minimax gets a 403 even if AGENTOPS_ALLOW_DEV_TOKEN=1
+    is set, which is the safety default.
+    """
+    try:
+        settings = get_settings()
+    except Exception:  # noqa: BLE001 - dev-only probe
+        return False
+    if not settings.allow_dev_token:
+        return False
+    return settings.provider == "local-fake" or settings.dev_token_any_provider
+
+
+@app.get("/v1/auth/dev-token", response_model=DevTokenResponse)
+def dev_token(principal_id: str = "dev-user") -> DevTokenResponse:
+    """Mint a fresh JWT for `principal_id`. Dev-only.
+
+    Disabled by default. Enable with `AGENTOPS_ALLOW_DEV_TOKEN=1` AND
+    EITHER `AGENTOPS_PROVIDER=local-fake` (the dev default) OR
+    `AGENTOPS_DEV_TOKEN_ANY_PROVIDER=1` (a deliberate second opt-in for
+    a local/demo run against a real provider). A real deployment with
+    `provider=minimax|openai|anthropic` and only the first flag set
+    still gets a 403 -- prevents accidentally shipping dev-mode auth to
+    prod.
+    """
+    if not _dev_token_allowed():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "/v1/auth/dev-token is dev-only. Set AGENTOPS_ALLOW_DEV_TOKEN=1 "
+                "and either provider=local-fake or AGENTOPS_DEV_TOKEN_ANY_PROVIDER=1."
+            ),
+        )
+    settings = get_settings()
+    pid = principal_id.strip() or settings.dev_principal_id
+    tok = issue_token(pid, settings)
+    return DevTokenResponse(
+        token=tok,
+        principal_id=pid,
+        expires_in=settings.jwt_expiry_seconds,
+    )
+
+
+@app.get("/v1/auth/dev-mode", response_model=dict)
+def dev_mode() -> dict:
+    """Report whether dev-mode auto-mint is on, so the web UI can
+    know to skip the manual Bearer field."""
+    return {
+        "enabled": _dev_token_allowed(),
+        "provider": get_settings().provider,
+        "default_principal": get_settings().dev_principal_id,
+    }
+
+
 @app.post("/v1/actions", response_model=ApproveResult, status_code=status.HTTP_201_CREATED)
 def create_action(body: ApproveBody, run_id: str, principal_id: str = Depends(require_principal)) -> ApproveResult:
     """Create a pending action record (bound nonce + expiry)."""
@@ -370,7 +480,6 @@ def debug_retrieve(task: str) -> dict:
                 "AGENTOPS_ALLOW_DEBUG_METRICS=1 to enable on a real provider."
             ),
         )
-    from pathlib import Path
     docs_dir = (Path(__file__).parent.parent.parent / "fixtures" / "docs")
     from ..mcp import InMemoryDocumentClient
     client = InMemoryDocumentClient(docs_dir=str(docs_dir))
@@ -634,4 +743,300 @@ def _format_oss_helper_html(repo_url: str, *, repo_header: str = "") -> str:
         "{repo_url_value}", _html.escape(repo_url or "")
     ).replace(
         "{repo_header}", repo_header or ""
+    )
+
+
+# ---- Wiki corpus (Phase 9: browser-native directory picker) ----
+#
+# The browser File System Access API lets a reviewer pick a directory
+# and read its .md files client-side. The browser POSTs each file's
+# {path, content, mtime} here; the server writes them to a temp dir,
+# builds a WikiRagAdapter (the same TF-IDF + cosine retrieval the
+# planner_executor and single_agent topologies already use), and
+# returns a corpus_id. corpus_id is process-local + LRU-capped;
+# persistent storage is intentionally NOT supported (would mean
+# keeping user files on server disk — a privacy regression).
+
+
+class _WikiFileUpload(BaseModel):
+    path: str
+    content: str
+    mtime: int = 0
+
+
+class IndexFilesBody(BaseModel):
+    files: list[_WikiFileUpload]
+    # When the picked directory was an Obsidian vault, the browser
+    # supplies the vault name so the server can construct
+    # `obsidian://open?vault=<vault>&file=<path>` deep links for every
+    # search hit. Optional: missing -> no deep links emitted (avoids
+    # guessing a vault to open).
+    vault_name: str | None = None
+
+
+class IndexFilesResponse(BaseModel):
+    corpus_id: str
+    doc_count: int
+    duration_ms: int
+
+
+class WikiHit(BaseModel):
+    ref_id: str
+    title: str
+    score: float
+    # AC3 trust fields.
+    source_path: str
+    evidence_span: str
+    match_offsets: list[list[int]]
+    coverage: float
+    contributing_terms: list[str]
+    mtime: int
+    # Set only when the indexed directory was an Obsidian vault (browser
+    # supplied vault_name on upload). The frontend uses this for a
+    # one-click "open in vault" link on every hit.
+    obsidian_uri: str | None = None
+
+
+class WikiSearchResponse(BaseModel):
+    query: str
+    corpus_id: str
+    top_k: int
+    results: list[WikiHit]
+
+
+class SentenceScore(BaseModel):
+    sentence: str
+    cited_refs: list[str]
+    unresolved_refs: list[str]
+    # Three published metrics per sentence.
+    rouge_l_f1: float
+    rouge_l_precision: float
+    rouge_l_recall: float
+    sentence_tokens: int
+    evidence_tokens: int
+    lcs_length: int
+
+
+class QaResponse(BaseModel):
+    query: str
+    corpus_id: str
+    answer: str
+    # Echoed back so the client can rejoin the conversation on a
+    # follow-up turn. Server mints one if `body.thread_id` is None.
+    thread_id: str
+    # Four answer-level published metrics.
+    overall_rouge_l_f1: float
+    citation_recall: float
+    citation_precision: float
+    # Faithfulness (Maynez et al., 2020) — mean sentence-level lexical-
+    # entailment proxy across the answer, 0..1. Independent of citation
+    # metrics: a sentence can cite [1] correctly AND still be unsupported
+    # by evidence (paraphrased fabrication). Catches that case.
+    faithfulness: float
+    sentences: list[SentenceScore]
+    hits: list[WikiHit]
+
+
+class QaBody(BaseModel):
+    corpus_id: str
+    query: str
+    top_k: int = 5
+    # None -> start a new conversation (server mints a thread_id and
+    # returns it in QaResponse). Pass the same value back on a follow-up
+    # turn -- the LangGraph checkpointer in graph/wiki_chat.py restores
+    # that thread's history automatically; the client never resends it.
+    thread_id: str | None = None
+
+
+@app.post("/v1/wiki/index-files", response_model=IndexFilesResponse)
+def index_files(
+    body: IndexFilesBody,
+    principal_id: str = Depends(require_principal),
+) -> IndexFilesResponse:
+    """Accept the browser-uploaded {path, content, mtime} list, write
+    them to a temp dir, and build a WikiRagAdapter. Returns corpus_id.
+
+    Path validation: rejects absolute paths and any path containing
+    `..` segments. The browser can technically read anywhere on the
+    user's filesystem once the OS picker is approved; the server still
+    refuses to write outside the temp dir even if the client is buggy
+    or malicious.
+    """
+    import time as _time
+
+    started = _time.monotonic()
+    files_payload = [
+        {"path": f.path, "content": f.content, "mtime": f.mtime}
+        for f in body.files
+    ]
+    try:
+        corpus_id, _work_dir, doc_count = wiki_corpus.index_uploaded_files(
+            files_payload, vault_name=body.vault_name
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    duration_ms = int((_time.monotonic() - started) * 1000)
+    log.info(
+        "wiki index: principal=%s corpus_id=%s doc_count=%d files=%d duration_ms=%d",
+        principal_id, corpus_id, doc_count, len(files_payload), duration_ms,
+    )
+    return IndexFilesResponse(
+        corpus_id=corpus_id,
+        doc_count=doc_count,
+        duration_ms=duration_ms,
+    )
+
+
+@app.get("/v1/wiki/search", response_model=WikiSearchResponse)
+def wiki_search_endpoint(
+    corpus_id: str,
+    q: str,
+    top_k: int = 5,
+    principal_id: str = Depends(require_principal),
+) -> WikiSearchResponse:
+    """TF-IDF search scoped to `corpus_id`. Returns AC3 trust fields
+    on every hit. 404 if the corpus_id is unknown (evicted from LRU
+    or never existed)."""
+    effective_top_k = max(1, min(top_k, 20))
+    try:
+        hits, timing_ms = wiki_corpus.search_with_timing(
+            corpus_id, q, top_k=effective_top_k
+        )
+    except wiki_corpus.UnknownCorpusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"corpus_id not found: {exc.corpus_id}",
+        ) from exc
+    # Record one latency sample per call -- the dashboard's p50/p95
+    # bars are built off this rolling window.
+    search_metrics.record(
+        StageSample(
+            tokenize_ms=timing_ms.get("tokenize_ms", 0.0),
+            score_ms=timing_ms.get("score_ms", 0.0),
+            sort_and_return_ms=timing_ms.get("sort_and_return_ms", 0.0),
+            total_ms=timing_ms.get("total_ms", 0.0),
+        )
+    )
+    return WikiSearchResponse(
+        query=q,
+        corpus_id=corpus_id,
+        top_k=effective_top_k,
+        results=[WikiHit(**h.to_dict()) for h in hits],
+    )
+
+
+@app.get("/v1/wiki/metrics")
+def wiki_metrics_endpoint(
+    principal_id: str = Depends(require_principal),
+) -> dict[str, Any]:
+    """Aggregate observability for the wiki chat surface.
+
+    Two views, both covering the trailing 200-call window:
+      - `latency`: per-stage p50/p95 ms from /v1/wiki/search calls
+        (tokenize / score / sort+return / total).
+      - `groundedness`: per-call ROUGE-L F1, Citation Recall, Citation
+        Precision averages from /v1/wiki/qa calls -- the
+        "is the model hallucinating?" signal the operator watches.
+
+    Same dev-only-ish posture as `/_debug/metrics`: the data here is
+    operational, not customer-facing, but it is still behind the JWT
+    gate so an unauthenticated probe can't enumerate timing."""
+    return {
+        "latency": search_metrics.stats(),
+        "groundedness": groundedness_metrics.stats(),
+    }
+
+
+@app.post("/v1/wiki/qa", response_model=QaResponse)
+def wiki_qa(
+    body: QaBody,
+    principal_id: str = Depends(require_principal),
+) -> QaResponse:
+    """Multi-turn wiki chat. One turn = one retrieval + one LLM answer +
+    per-sentence groundedness via the published metrics (ROUGE-L F1 —
+    Lin, 2004; Citation Recall + Precision — Honovich et al., 2022).
+
+    The LLM is prompted to ground every claim with a bracketed
+    footnote number ([1], [2], ...) matching the evidence's own
+    numbering. The server deterministically appends a References
+    list mapping each number to its real source_path; a follow-up
+    turn resumes the conversation by `thread_id`, transmitted only
+    as a single opaque string -- the client never resends the
+    transcript. The LangGraph checkpointer
+    (`graph/wiki_chat.py::_WikiChatState.history`) restores history
+    server-side, keyed by `thread_id` in `config.configurable`.
+    """
+    thread_id = body.thread_id or uuid.uuid4().hex
+    settings = get_settings()
+    adapter = make_adapter(settings)
+    # Capture per-stage search timing for the metrics dashboard.
+    # The chat graph's internal `_retrieve_node` already times this
+    # call, but doesn't surface the numbers to the API layer; the
+    # cleanest thing for the operator's p50/p95 view is to re-time the
+    # public call once more here, on the API thread. The cost is one
+    # extra search per turn -- negligible vs the LLM latency.
+    #
+    # Skip the timing re-run entirely on the UnknownCorpusError path:
+    # there's no benefit to recording a 404 search latency.
+    search_timing_ms: dict[str, float] = {}
+    try:
+        _, search_timing_ms = wiki_corpus.search_with_timing(
+            body.corpus_id, body.query, top_k=body.top_k
+        )
+    except wiki_corpus.UnknownCorpusError:
+        # Re-raise below; just don't record latency on the error path.
+        pass
+    if search_timing_ms:
+        search_metrics.record(
+            StageSample(
+                tokenize_ms=search_timing_ms.get("tokenize_ms", 0.0),
+                score_ms=search_timing_ms.get("score_ms", 0.0),
+                sort_and_return_ms=search_timing_ms.get("sort_and_return_ms", 0.0),
+                total_ms=search_timing_ms.get("total_ms", 0.0),
+            )
+        )
+    try:
+        turn = run_wiki_chat(
+            adapter, body.corpus_id, body.query, thread_id, top_k=body.top_k
+        )
+    except wiki_corpus.UnknownCorpusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"corpus_id not found: {exc.corpus_id}",
+        ) from exc
+    finally:
+        adapter.close()
+
+    # Record one groundedness sample per call -- the dashboard's
+    # "Accuracy / hallucination" panel aggregates these over the
+    # trailing 200-call window so a reviewer can see whether the
+    # model is drifting, not just what one turn did.
+    groundedness_metrics.record(
+        GroundednessSample(
+            rouge_l_f1=turn.overall_rouge_l_f1,
+            citation_recall=turn.citation_recall,
+            citation_precision=turn.citation_precision,
+            faithfulness=turn.faithfulness,
+        )
+    )
+    log.info(
+        "wiki qa: principal=%s corpus_id=%s thread_id=%s hits=%d sentences=%d "
+        "rouge_l=%.3f cite_recall=%.3f cite_prec=%.3f faithful=%.3f",
+        principal_id, body.corpus_id, thread_id, len(turn.hits), len(turn.sentences),
+        turn.overall_rouge_l_f1, turn.citation_recall, turn.citation_precision,
+        turn.faithfulness,
+    )
+    return QaResponse(
+        query=body.query,
+        corpus_id=body.corpus_id,
+        thread_id=thread_id,
+        answer=turn.answer,
+        overall_rouge_l_f1=turn.overall_rouge_l_f1,
+        citation_recall=turn.citation_recall,
+        citation_precision=turn.citation_precision,
+        faithfulness=turn.faithfulness,
+        sentences=[SentenceScore(**s) for s in turn.sentences],
+        hits=[WikiHit(**h) for h in turn.hits],
     )

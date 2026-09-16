@@ -59,6 +59,22 @@ class Settings(BaseSettings):
     # Auth: principal for local dev
     dev_principal_id: str = "dev-user"
 
+    # Dev-mode auto-mint: when True AND provider=local-fake, the API
+    # exposes GET /v1/auth/dev-token that mints a fresh JWT on demand
+    # so the web UI (and Streamlit) can authenticate without a
+    # hand-pasted bearer. Production deployments leave this False
+    # (default) and route JWTs through an ID provider (Auth0/Cognito/etc).
+    allow_dev_token: bool = False
+
+    # Deliberate second opt-in: lets auto-mint (allow_dev_token) also
+    # cover a real provider (minimax/openai/anthropic), for someone
+    # running this locally as a demo with a real API key but without a
+    # real login system. Requires BOTH flags explicitly set -- setting
+    # a real provider must never, by itself, re-enable an
+    # unauthenticated token-minting HTTP endpoint. Without this second
+    # flag, the original provider==local-fake-only gate is unchanged.
+    dev_token_any_provider: bool = False
+
     def resolved_corpus(self, override: str | None = None) -> tuple[str, bool]:
         """Resolve the (corpus_dir, wiki_mode) tuple for a single run.
 

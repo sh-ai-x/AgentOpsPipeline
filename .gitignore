@@ -20,6 +20,9 @@ dist/
 out/
 coverage/
 .nyc_output/
+# Project convention: uv.lock is the source of truth on this repo --
+# package-lock.json from an `npm install` shouldn't be committed.
+package-lock.json
 
 # Python
 __pycache__/
