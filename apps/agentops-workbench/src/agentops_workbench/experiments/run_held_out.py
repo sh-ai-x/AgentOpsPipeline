@@ -25,10 +25,15 @@ from agentops_workbench.experiments.held_out import (
     _cost,
     _git_sha,
 )
-from agentops_workbench.graph.topology import run_topology
+from agentops_workbench.graph.topology import TOPOLOGIES, run_topology
 from agentops_workbench.llm.adapter import Usage
 from agentops_workbench.llm.factory import make_adapter
 from agentops_workbench.settings import get_settings
+
+# Trials per (case, topology) cell. Source of truth for the experiment
+# grid -- the caveat text in _write_uncertainty references the same
+# constant, so a bump to N_TRIALS auto-propagates everywhere.
+N_TRIALS = 2
 
 
 def run(repo_root: Path, *, output_dir: Path | None = None) -> tuple[list[RunOutcome], ExperimentManifest]:
@@ -38,7 +43,11 @@ def run(repo_root: Path, *, output_dir: Path | None = None) -> tuple[list[RunOut
     out_dir = output_dir or (repo_root / "experiments" / "held-out-v1")
     out_dir.mkdir(parents=True, exist_ok=True)
     ceiling = SpendCeiling(max_usd=5.0)
-    selected = ("fixed", "single_agent")
+    # Source of truth for which topologies the held-out benchmark covers is
+    # `graph.topology.TOPOLOGIES`. Deriving from it makes a future fourth
+    # topology register here automatically instead of needing a second
+    # silent-exclusion fix.
+    selected = tuple(TOPOLOGIES.keys())
 
     manifest = ExperimentManifest(
         started_at=_now_iso(),
@@ -56,7 +65,7 @@ def run(repo_root: Path, *, output_dir: Path | None = None) -> tuple[list[RunOut
     total_cost = 0.0
     for case in held:
         for topology in selected:
-            for trial in range(2):
+            for trial in range(N_TRIALS):
                 start_ms = _now_ms()
                 try:
                     result = run_topology(topology, adapter, case.task)
@@ -76,7 +85,14 @@ def run(repo_root: Path, *, output_dir: Path | None = None) -> tuple[list[RunOut
                     answer = result.get("answer") or ""
                     ok = task_success(case, answer)
                     recall = retrieval_recall_at_k(case, [case.source_refs[0]] if case.source_refs else [])
-                    tool_corr = tool_correctness(case, [])
+                    # Every wrapper in graph/topology.py guarantees a
+                    # `tool_results` key -- empty for fixed/single_agent
+                    # (no tools dispatched), real per-step tool calls for
+                    # planner_executor. planner_executor therefore scores
+                    # against its real DocumentClient calls; fixed/
+                    # single_agent score against [] and stay at 0.0 by
+                    # design.
+                    tool_corr = tool_correctness(case, result.get("tool_results", []))
                     outcomes.append(RunOutcome(
                         run_id=uuid.uuid4().hex[:16],
                         case_id=case.id,
@@ -112,7 +128,13 @@ def run(repo_root: Path, *, output_dir: Path | None = None) -> tuple[list[RunOut
     _write_outcomes(out_dir / "outcomes.jsonl", outcomes)
     _write_manifest(out_dir / "manifest.json", manifest)
     _write_failed(out_dir / "failed_cases.md", outcomes)
-    _write_uncertainty(out_dir / "uncertainty.md", outcomes, manifest)
+    _write_uncertainty(
+        out_dir / "uncertainty.md",
+        outcomes,
+        manifest,
+        n_cases=len(held),
+        n_topologies=len(selected),
+    )
     return outcomes, manifest
 
 
@@ -143,7 +165,14 @@ def _write_failed(path: Path, outcomes: list[RunOutcome]) -> None:
     path.write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
 
 
-def _write_uncertainty(path: Path, outcomes: list[RunOutcome], manifest: ExperimentManifest) -> None:
+def _write_uncertainty(
+    path: Path,
+    outcomes: list[RunOutcome],
+    manifest: ExperimentManifest,
+    *,
+    n_cases: int,
+    n_topologies: int,
+) -> None:
     by_topo: dict[str, list[RunOutcome]] = {}
     for o in outcomes:
         by_topo.setdefault(o.topology, []).append(o)
@@ -167,7 +196,7 @@ def _write_uncertainty(path: Path, outcomes: list[RunOutcome], manifest: Experim
         "",
         "## Caveats",
         "",
-        "- 6 held-out cases x 2 trials x 2 topologies = 24 runs is illustrative, not statistically settled.",
+        f"- {n_cases} held-out cases x {N_TRIALS} trials x {n_topologies} topologies = {n_cases * N_TRIALS * n_topologies} runs is illustrative, not statistically settled.",
         "- Family-aware uncertainty is NOT computed because sample size per family is too small (1 case / family).",
         "- Temperature 0 is set; provider-side stochasticity may still cause non-determinism.",
     ]
