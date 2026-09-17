@@ -1,0 +1,10 @@
+{
+  "id": "wq-010",
+  "family_id": "acronym",
+  "query": "what does a 429 mean",
+  "relevant_refs": ["ops__rate-limits"],
+  "partially_relevant_refs": [],
+  "relevant_sections": ["ops__rate-limits"],
+  "reviewer": "sh-ai-x",
+  "split": "val"
+}

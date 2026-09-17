@@ -256,6 +256,33 @@ button:disabled {
   font-size: 13px;
 }
 
+.chat-bubble.chat-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 4px 14px 14px 14px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.chat-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: 0.6;
+  animation: chat-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes chat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .chat-detail {
   margin-top: 8px;
   font-size: 13px;

@@ -67,7 +67,18 @@ function Bar({ value }: { value: number }) {
   );
 }
 
-export default function MetricsPanel({ bearer }: { bearer: string }) {
+export default function MetricsPanel({
+  bearer,
+  retrieval,
+}: {
+  bearer: string;
+  // ADR-0010 §4.5: retrieval mode is fixed per corpus at index time and
+  // this window aggregates whatever mode was active when each answer was
+  // produced -- so the subtitle names it, rather than presenting mixed-mode
+  // numbers as one undifferentiated figure. `null` before any corpus is
+  // indexed.
+  retrieval?: string | null;
+}) {
   const [data, setData] = useState<MetricsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [interval, setInterval_] = useState<PollInterval>(5);
@@ -127,8 +138,13 @@ export default function MetricsPanel({ bearer }: { bearer: string }) {
 
       <h3>Accuracy / hallucination (recent window)</h3>
       <p className="muted">
-        Mean over the last {data?.groundedness.sample_count ?? 0} /v1/wiki/qa answers.
-        A drop here means the model is starting to drift off the evidence.
+        Mean over the last {data?.groundedness.sample_count ?? 0} /v1/wiki/qa answers
+        {retrieval && (
+          <>
+            {" "}(retrieval: <strong>{retrieval}</strong>)
+          </>
+        )}
+        . A drop here means the model is starting to drift off the evidence.
       </p>
       {data && (
         <div className="metric-stats-row">

@@ -93,6 +93,29 @@ def test_run_wiki_chat_answers_a_single_turn(corpus_id: str) -> None:
     assert "[1]" in turn.answer
 
 
+def test_run_wiki_chat_reports_a_genuinely_computed_faithfulness_score(
+    corpus_id: str,
+) -> None:
+    """Regression: `_WikiChatState` (the graph's TypedDict schema) never
+    declared a `faithfulness` key, so LangGraph silently dropped
+    `_answer_node`'s computed value when merging node output into graph
+    state -- `run_wiki_chat` always fell back to its `result.get(
+    "faithfulness", 0.0)` default, showing 0% on every single turn
+    regardless of how well-grounded the answer actually was. Every other
+    metric (ROUGE-L, Citation Recall/Precision) happened to be declared
+    in the schema, which is why only Faithfulness was silently broken.
+
+    A cited claim that genuinely overlaps its evidence's vocabulary must
+    score meaningfully above zero -- not just "some float", the actual
+    non-degenerate value the metric is supposed to produce."""
+    adapter = _StubAdapter(["Checkpointing persists graph state via PostgresCheckpointer. [1]"])
+    turn = run_wiki_chat(adapter, corpus_id, "how does checkpointing work", thread_id="t-faithful")
+    assert turn.faithfulness > 0.3, (
+        f"expected a genuinely non-zero faithfulness score for a well-grounded "
+        f"cited claim, got {turn.faithfulness}"
+    )
+
+
 def test_run_wiki_chat_persists_history_across_turns_via_thread_id(corpus_id: str) -> None:
     """The whole point of the checkpointer: the SECOND call must see the
     FIRST turn's history in its prompt, even though the caller never

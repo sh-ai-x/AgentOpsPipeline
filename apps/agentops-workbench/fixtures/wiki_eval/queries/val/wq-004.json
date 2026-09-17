@@ -1,0 +1,10 @@
+{
+  "id": "wq-004",
+  "family_id": "multi_hop",
+  "query": "How is Postgres used for both checkpointing and resuming a run?",
+  "relevant_refs": ["langgraph__checkpointing", "langgraph__resume-runs"],
+  "partially_relevant_refs": [],
+  "relevant_sections": ["langgraph__checkpointing", "langgraph__resume-runs"],
+  "reviewer": "sh-ai-x",
+  "split": "val"
+}

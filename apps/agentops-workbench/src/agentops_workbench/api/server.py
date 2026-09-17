@@ -39,6 +39,7 @@ from ..db.session import session_scope
 from ..graph.state import RunState, is_terminal, make_action_key
 from ..graph.topology import run_topology
 from ..graph.wiki_chat import run_wiki_chat
+from ..llm.errors import LLMProviderError
 from ..llm.factory import make_adapter
 from ..mocks.tickets import TicketLedger
 from ..settings import get_settings
@@ -773,17 +774,26 @@ class IndexFilesBody(BaseModel):
     # guessing a vault to open).
     vault_name: str | None = None
     # Retrieval algorithm for this corpus. None -> settings.wiki_default_retrieval.
-    # "bm25" saturates term-frequency and normalizes by document length;
-    # "tfidf" (or the settings default) is the original cosine-similarity
-    # scorer. Pydantic rejects any other value with a 422 before this
-    # ever reaches wiki_corpus.index_uploaded_files.
-    retrieval: Literal["tfidf", "bm25"] | None = None
+    # "tfidf"/"bm25" are the original lexical scorers. "dense" (chunk-level
+    # cosine over a small ONNX embedding model), "hybrid" (BM25+dense via
+    # Reciprocal Rank Fusion) and "hybrid_rerank" (hybrid + a cross-encoder
+    # rerank pass) are ADR-0010's additions -- CPU-only, no GPU required,
+    # gated behind the optional `[dense]` install extra. Their `score` is on
+    # a different scale than tfidf/bm25's (see ADR-0010 Consequences).
+    # Pydantic rejects any other value with a 422 before this ever reaches
+    # wiki_corpus.index_uploaded_files.
+    retrieval: Literal["tfidf", "bm25", "dense", "hybrid", "hybrid_rerank"] | None = None
 
 
 class IndexFilesResponse(BaseModel):
     corpus_id: str
     doc_count: int
     duration_ms: int
+    # The mode that actually got resolved -- may differ from what the
+    # client sent (None falls back to settings.wiki_default_retrieval).
+    # The web UI attributes the live groundedness dashboard to this value
+    # (ADR-0010 §4.5) since retrieval mode is fixed per corpus at index time.
+    retrieval: str
 
 
 class WikiHit(BaseModel):
@@ -852,6 +862,24 @@ class QaBody(BaseModel):
     # turn -- the LangGraph checkpointer in graph/wiki_chat.py restores
     # that thread's history automatically; the client never resends it.
     thread_id: str | None = None
+    # UI provider picker (`GET /v1/wiki/providers` lists which of these
+    # are actually usable, i.e. have a key configured server-side).
+    # None -> settings.provider. The API key itself is NEVER accepted
+    # here or anywhere else from the client -- it only ever comes from
+    # server-side env vars via `Settings`.
+    provider: Literal["local-fake", "minimax", "openai"] | None = None
+
+
+class ProvidersResponse(BaseModel):
+    available: list[str]
+    default: str
+
+
+class ProviderCheckResponse(BaseModel):
+    provider: str
+    # "ok" | "unconfigured" | one of LLMProviderError's kinds
+    # (quota_exceeded / rate_limited / auth_failed / unavailable / unknown).
+    status: str
 
 
 @app.post("/v1/wiki/index-files", response_model=IndexFilesResponse)
@@ -884,14 +912,18 @@ def index_files(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     duration_ms = int((_time.monotonic() - started) * 1000)
+    resolved_retrieval = wiki_corpus.get_registry().get(corpus_id).adapter._retrieval
     log.info(
-        "wiki index: principal=%s corpus_id=%s doc_count=%d files=%d duration_ms=%d",
+        "wiki index: principal=%s corpus_id=%s doc_count=%d files=%d duration_ms=%d "
+        "retrieval=%s",
         principal_id, corpus_id, doc_count, len(files_payload), duration_ms,
+        resolved_retrieval,
     )
     return IndexFilesResponse(
         corpus_id=corpus_id,
         doc_count=doc_count,
         duration_ms=duration_ms,
+        retrieval=resolved_retrieval,
     )
 
 
@@ -955,6 +987,111 @@ def wiki_metrics_endpoint(
     }
 
 
+# LLMProviderError.kind -> (HTTP status, detail template). `quota_exceeded`
+# and `rate_limited` get 429 (retryable by the caller, in principle -- a
+# quota_exceeded retry will just fail again until the account is topped up,
+# but 429 is still the closer HTTP semantic than a 5xx). `auth_failed` and
+# `unavailable` are upstream/config problems the caller can't fix by
+# retrying, so they get 502. Detail messages are operator-actionable, not
+# just "LLM call failed" -- see the incident in llm/errors.py's docstring.
+_LLM_ERROR_RESPONSES: dict[str, tuple[int, str]] = {
+    "quota_exceeded": (
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        "The {provider} account has run out of credits/quota. Add credits "
+        "or switch providers (AGENTOPS_PROVIDER), then try again.",
+    ),
+    "rate_limited": (
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        "The {provider} API is rate-limiting requests right now. Wait a "
+        "moment and try again.",
+    ),
+    "auth_failed": (
+        status.HTTP_502_BAD_GATEWAY,
+        "The {provider} API rejected the configured API key. Check the "
+        "AGENTOPS_{PROVIDER_UPPER}_API_KEY setting.",
+    ),
+    "unavailable": (
+        status.HTTP_502_BAD_GATEWAY,
+        "Could not reach the {provider} API (network error or timeout). "
+        "Try again shortly.",
+    ),
+    "unknown": (
+        status.HTTP_502_BAD_GATEWAY,
+        "The {provider} API call failed: {message}",
+    ),
+}
+
+
+def _llm_provider_http_exception(exc: LLMProviderError) -> HTTPException:
+    status_code, template = _LLM_ERROR_RESPONSES.get(exc.kind, _LLM_ERROR_RESPONSES["unknown"])
+    detail = template.format(
+        provider=exc.provider, provider_upper=exc.provider.upper(),
+        PROVIDER_UPPER=exc.provider.upper(), message=exc.message,
+    )
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+@app.get("/v1/wiki/providers", response_model=ProvidersResponse)
+def wiki_providers(principal_id: str = Depends(require_principal)) -> ProvidersResponse:
+    """List which LLM providers the UI's provider picker may offer.
+
+    `local-fake` is always available (needs no key). `minimax`/`openai`
+    are listed only when their API key is actually configured server-side
+    -- offering a provider with no key would just fail on the first call
+    with the `auth_failed` LLMProviderError. Never returns a key value.
+    """
+    settings = get_settings()
+    available = ["local-fake"]
+    if settings.minimax_api_key:
+        available.append("minimax")
+    if settings.openai_api_key:
+        available.append("openai")
+    return ProvidersResponse(available=available, default=settings.provider)
+
+
+@app.post("/v1/wiki/providers/{provider}/check", response_model=ProviderCheckResponse)
+def check_provider(
+    provider: Literal["local-fake", "minimax", "openai"],
+    principal_id: str = Depends(require_principal),
+) -> ProviderCheckResponse:
+    """Make one real, minimal test call to `provider` and report whether it
+    actually works -- not just whether a key is present. Manually triggered
+    from the UI (never automatic) because it spends a small amount of real
+    money on a configured provider. Reports the SAME classified reason
+    (`LLMProviderError.kind`) a real chat turn hitting this problem would
+    get, so "quota exhausted" and "bad key" show up distinctly rather than
+    both just being "broken".
+    """
+    settings = get_settings()
+    if provider == "local-fake":
+        return ProviderCheckResponse(provider=provider, status="ok")
+
+    key = settings.minimax_api_key if provider == "minimax" else settings.openai_api_key
+    if not key:
+        return ProviderCheckResponse(provider=provider, status="unconfigured")
+
+    try:
+        adapter = make_adapter(settings, provider=provider)
+    except ValueError:
+        return ProviderCheckResponse(provider=provider, status="unconfigured")
+    try:
+        # max_tokens=16, not 1: a reasoning model (gpt-5.6-luna, o1, o3)
+        # spends hidden reasoning tokens before any visible output, so a
+        # 1-token budget fails with "Could not finish the message because
+        # max_tokens ... was reached" even on a perfectly valid key --
+        # confirmed via a real call, not assumed.
+        adapter.chat([{"role": "user", "content": "ping"}], max_tokens=16)
+    except LLMProviderError as exc:
+        log.info("provider check: provider=%s status=%s", provider, exc.kind)
+        return ProviderCheckResponse(provider=provider, status=exc.kind)
+    except Exception:  # noqa: BLE001 - report as "unknown", never raise from a check
+        log.exception("provider check: unexpected error provider=%s", provider)
+        return ProviderCheckResponse(provider=provider, status="unknown")
+    finally:
+        adapter.close()
+    return ProviderCheckResponse(provider=provider, status="ok")
+
+
 @app.post("/v1/wiki/qa", response_model=QaResponse)
 def wiki_qa(
     body: QaBody,
@@ -976,7 +1113,15 @@ def wiki_qa(
     """
     thread_id = body.thread_id or uuid.uuid4().hex
     settings = get_settings()
-    adapter = make_adapter(settings)
+    try:
+        adapter = make_adapter(settings, provider=body.provider)
+    except ValueError as exc:
+        # Missing API key for the requested provider (make_adapter raises
+        # before any network call) -- a config problem the caller CAN fix
+        # (pick a different provider, or an operator sets the key), unlike
+        # the LLMProviderError cases below which are the provider's own
+        # call failing after a key was already present.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     # Capture per-stage search timing for the metrics dashboard.
     # The chat graph's internal `_retrieve_node` already times this
     # call, but doesn't surface the numbers to the API layer; the
@@ -1012,6 +1157,12 @@ def wiki_qa(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"corpus_id not found: {exc.corpus_id}",
         ) from exc
+    except LLMProviderError as exc:
+        log.warning(
+            "wiki qa: LLM provider error principal=%s corpus_id=%s provider=%s kind=%s",
+            principal_id, body.corpus_id, exc.provider, exc.kind,
+        )
+        raise _llm_provider_http_exception(exc) from exc
     finally:
         adapter.close()
 

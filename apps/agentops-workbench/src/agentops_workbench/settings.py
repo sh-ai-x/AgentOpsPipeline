@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _INSECURE_JWT_SECRETS = {"", "dev-only-please-rotate"}
 _ALLOWED_JWT_ALGORITHMS = {"HS256", "HS384", "HS512"}
+_ALLOWED_REASONING_EFFORTS = {"", "none", "low", "medium", "high", "xhigh", "max"}
 
 
 class Settings(BaseSettings):
@@ -26,6 +27,15 @@ class Settings(BaseSettings):
     minimax_base_url: str = "https://api.minimax.chat/v1"
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+
+    # Reasoning effort for GPT-5-family / o1 / o3 "reasoning" models on
+    # OpenAI's Chat Completions API (`OpenAICompatAdapter`) -- controls how
+    # many hidden reasoning tokens the model spends before answering.
+    # Empty string = unset -> the param is omitted from the API call
+    # entirely (required for non-reasoning models like gpt-4o-mini, which
+    # reject an unrecognized `reasoning_effort` field). Ignored by
+    # `MinimaxAdapter` and `LocalFakeAdapter`.
+    reasoning_effort: str = ""
 
     # App
     app_host: str = "127.0.0.1"
@@ -105,6 +115,36 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"AGENTOPS_JWT_ALGORITHM must be one of {sorted(_ALLOWED_JWT_ALGORITHMS)}; "
                 f"got {self.jwt_algorithm!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _guard_wiki_default_retrieval(self) -> Settings:
+        """Reject an unknown AGENTOPS_WIKI_DEFAULT_RETRIEVAL at startup
+        rather than at the first /v1/wiki/index-files call -- mirrors
+        ADR-0007 §4's "Unknown names fail at startup" and the
+        `_guard_jwt_algorithm` idiom above. Imported inside the validator
+        body (not at module scope) to avoid a `settings -> adapters.wiki_rag
+        -> mcp` import cycle."""
+        from .adapters.wiki_rag import _VALID_RETRIEVAL_MODES
+
+        if self.wiki_default_retrieval not in _VALID_RETRIEVAL_MODES:
+            raise ValueError(
+                f"AGENTOPS_WIKI_DEFAULT_RETRIEVAL must be one of "
+                f"{sorted(_VALID_RETRIEVAL_MODES)}; got "
+                f"{self.wiki_default_retrieval!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _guard_reasoning_effort(self) -> Settings:
+        """Reject an unknown AGENTOPS_REASONING_EFFORT at startup rather
+        than at the first reasoning-model API call."""
+        if self.reasoning_effort not in _ALLOWED_REASONING_EFFORTS:
+            raise ValueError(
+                f"AGENTOPS_REASONING_EFFORT must be one of "
+                f"{sorted(_ALLOWED_REASONING_EFFORTS)}; got "
+                f"{self.reasoning_effort!r}."
             )
         return self
 

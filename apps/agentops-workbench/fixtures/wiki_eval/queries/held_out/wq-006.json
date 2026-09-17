@@ -1,0 +1,10 @@
+{
+  "id": "wq-006",
+  "family_id": "paraphrase",
+  "query": "What's the process for signing requests so the server trusts them?",
+  "relevant_refs": ["auth__jwt"],
+  "partially_relevant_refs": [],
+  "relevant_sections": ["auth__jwt"],
+  "reviewer": "sh-ai-x",
+  "split": "held_out"
+}

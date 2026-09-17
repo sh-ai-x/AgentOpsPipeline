@@ -1,0 +1,10 @@
+{
+  "id": "wq-009",
+  "family_id": "acronym",
+  "query": "JWT expiration setting",
+  "relevant_refs": ["auth__jwt"],
+  "partially_relevant_refs": [],
+  "relevant_sections": ["auth__jwt"],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

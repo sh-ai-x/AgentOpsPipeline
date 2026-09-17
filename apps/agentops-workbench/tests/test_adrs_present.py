@@ -12,6 +12,7 @@ REQUIRED_ADRS = [
     "0002-mcp-boundaries.md",
     "0003-provider-abstraction.md",
     "0004-dataset-separation.md",
+    "0010-dense-retrieval-and-reranking.md",
 ]
 
 

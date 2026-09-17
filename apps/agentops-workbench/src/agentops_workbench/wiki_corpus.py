@@ -9,22 +9,25 @@ Phase 9 design:
   - Subsequent /v1/wiki/search?corpus_id=... calls hit the registry,
     not the filesystem. The same WikiRagAdapter used by the
     planner_executor and single_agent topologies backs this too, now
-    with a selectable retrieval mode ("tfidf" default, or "bm25") --
-    see WikiRagAdapter's module docstring for the tradeoff.
+    with a selectable retrieval mode ("tfidf" default, "bm25", or --
+    ADR-0010 -- "dense" / "hybrid" / "hybrid_rerank") -- see
+    WikiRagAdapter's module docstring for the tradeoffs.
   - Search results gain five trust fields (AC3): source_path,
     evidence_span (with character offsets), coverage, contributing_terms,
-    mtime.
+    mtime. For a chunk ref_id (ADR-0010's non-lexical modes), source_path
+    and mtime are the PARENT file's -- a chunk isn't its own upload entry.
   - registry is process-local + LRU-capped. Persistent storage would
     mean keeping user files on server disk — a privacy regression.
 
 The tokenization helpers (`tokenize`, `split_sentences`,
-`extract_citation_refs`) live here too so the test suite can pin them
-without depending on the adapter's internal regex.
+`extract_citation_refs`) are re-exported here from `text_utils.py` (moved
+there in ADR-0010 to break an import cycle with `chunking.py`) so the
+test suite can keep pinning them via `wiki_corpus.*` without depending on
+the adapter's internal regex.
 """
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import tempfile
 import threading
@@ -36,40 +39,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .adapters.wiki_rag import WikiRagAdapter
+from .text_utils import extract_citation_refs, split_sentences, tokenize
+
+__all__ = [
+    "DEFAULT_CAP",
+    "UnknownCorpusError",
+    "WikiCorpusRegistry",
+    "WikiSearchHit",
+    "cleanup_corpus",
+    "extract_citation_refs",
+    "get_registry",
+    "index_uploaded_files",
+    "reset_registry_for_tests",
+    "search",
+    "search_with_timing",
+    "split_sentences",
+    "tokenize",
+]
 
 log = logging.getLogger(__name__)
 
-
-# Mirror WikiRagAdapter's _TOKEN_RE = re.compile(r\"[a-z0-9]+\") so search-side
-# tokenization produces the same tokens that built the TF-IDF index.
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
-
-# Sentence splitter. Avoids splitting on common abbreviations and
-# decimal points so we don't over-segment. Each lookbehind is a
-# fixed-width string so re.compile accepts the pattern (Python's re
-# doesn't allow variable-width lookbehinds).
-#
-# A new sentence starts after `. ` when the next non-space char is
-# uppercase, a quote, OR a `[` — that last case matters because LLMs
-# commonly emit "...checkpoint. [ref-x] MongoDB is unrelated." and we
-# need to split there. We post-process below to attach a leading
-# `[ref-x]` to the previous sentence's citation slot, so the
-# citation follows (not leads) the sentence it grounds.
-_SENT_SPLIT_RE = re.compile(
-    r"(?<!\bMr)(?<!\bDr)(?<!\bMrs)(?<!\bMs)(?<!\bSt)(?<!\bvs)(?<!\betc)"
-    r"(?<!\be\.g)(?<!\bi\.e)"
-    r"\.\s+(?=[A-Z\"'\[])"
-)
-
-# Citation regex: bracketed tokens, allowing ``__`` and ``.`` for path-
-# encoded ref_ids like ``guides__install``. Trailing punctuation is
-# tolerated but stripped.
-_CITATION_RE = re.compile(r"\[([A-Za-z0-9_.~-]+)\]")
-
-# Matches a leading citation `[ref-x]` (with optional whitespace) at the
-# start of a sentence; used by `split_sentences` to reattach such
-# citations to the previous sentence.
-_LEADING_CITATION_RE = re.compile(r"\s*\[([A-Za-z0-9_.~-]+)\]")
 
 # Default LRU cap. Each WikiRagAdapter holds ~ corpus_size * avg_terms
 # counters in memory; 16 corpora × 4096 docs × ~50 unique terms is
@@ -86,62 +75,6 @@ class UnknownCorpusError(KeyError):
     def __init__(self, corpus_id: str) -> None:
         super().__init__(corpus_id)
         self.corpus_id = corpus_id
-
-
-# ---- Tokenization / sentence / citation helpers ----
-
-
-def tokenize(text: str) -> list[str]:
-    """Lower-case alphanumeric tokens, mirroring WikiRagAdapter."""
-    return _TOKEN_RE.findall(text.lower())
-
-
-def split_sentences(text: str) -> list[str]:
-    """Split a paragraph into sentences.
-
-    Handles common abbreviations and decimal points so we don't split
-    inside them. Empty/whitespace-only input returns [].
-
-    Post-processing: a leading `[ref-x]` citation on a sentence is
-    moved to the end of the previous sentence. LLMs emit
-    "...checkpoint. [ref-x] MongoDB is unrelated." — we want
-    `checkpoint.` to be its own sentence (so its citation follows it),
-    not have `[ref-x]` lead the next sentence (which would attribute
-    the wrong claim).
-    """
-    text = text.strip()
-    if not text:
-        return []
-    raw = [s.strip() for s in _SENT_SPLIT_RE.split(text) if s.strip()]
-    if len(raw) <= 1:
-        return raw
-    out: list[str] = []
-    for i, sent in enumerate(raw):
-        m = _LEADING_CITATION_RE.match(sent)
-        if m and i > 0:
-            # Attach the leading citation to the previous sentence.
-            out[-1] = f"{out[-1]} {m.group(0).strip()}"
-            out.append(sent[m.end():].strip())
-        else:
-            out.append(sent)
-    # Drop any empty trailing entries produced by the move.
-    return [s for s in out if s]
-
-
-def extract_citation_refs(text: str) -> list[str]:
-    """Extract unique `[ref_id]` citations, preserving first-occurrence order."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in _CITATION_RE.finditer(text):
-        rid = m.group(1)
-        # Strip a trailing period that's likely punctuation, not part of
-        # the ref_id. (e.g. `[ref-a].` -> `ref-a`)
-        if rid.endswith(".") and not rid.endswith(".."):
-            rid = rid[:-1]
-        if rid and rid not in seen:
-            seen.add(rid)
-            out.append(rid)
-    return out
 
 
 # ---- Result types ----
@@ -233,9 +166,19 @@ class WikiCorpusRegistry:
 
         `build` returns (adapter, work_dir, source_paths, mtimes).
         Returns the corpus_id (passed in, for fluent call sites).
+
+        `build()` runs OUTSIDE the lock. For `dense`/`hybrid`/
+        `hybrid_rerank` retrieval, it embeds every chunk (real CPU work,
+        seconds to tens of seconds for a large corpus); holding the lock
+        for that whole span would serialize every other registry
+        operation -- `get()`, `search_with_timing()`, another `register()`
+        -- behind it process-wide, freezing every OTHER session's
+        index/search/qa calls until this one embedding job finishes. The
+        lock only needs to protect the dict mutation below, which is fast
+        regardless of retrieval mode.
         """
+        adapter, work_dir, source_paths, mtimes = build()
         with self._lock:
-            adapter, work_dir, source_paths, mtimes = build()
             entry = _CorpusEntry(
                 corpus_id=corpus_id,
                 adapter=adapter,
@@ -345,6 +288,17 @@ def index_uploaded_files(
             entry.source_paths[rid] = str(
                 path.relative_to(work_dir)
             )
+    # ADR-0010: non-lexical modes also mint chunk ref_ids (f"{parent}#cN").
+    # Attribute each chunk to its PARENT file's path/mtime -- a chunk has no
+    # upload entry of its own, and without this the obsidian:// deep link
+    # (below) and the "source path" UI field would fall back to the raw
+    # chunk ref_id instead of a human-readable path.
+    for chunk_id, chunk in entry.adapter._chunks.items():
+        parent_id = chunk.parent_ref_id
+        if parent_id in entry.source_paths:
+            entry.source_paths.setdefault(chunk_id, entry.source_paths[parent_id])
+        if parent_id in entry.mtimes:
+            entry.mtimes.setdefault(chunk_id, entry.mtimes[parent_id])
     entry.vault_name = vault_name
     doc_count = len(entry.adapter._files)
     return corpus_id, work_dir, doc_count
@@ -430,11 +384,13 @@ def search_with_timing(
         # Compute per-term contributions to surface "why this doc". Uses
         # whichever IDF variant the adapter's active retrieval mode
         # actually scores with (_contributing_term_weight picks TF-IDF's
-        # or BM25's), so this stays accurate under either mode. Skip
-        # cleanly if the ref_id isn't in the adapter's counters.
+        # or BM25's), so this stays accurate under either mode.
+        # `term_counts()` spans both the whole-file and chunk indices
+        # (ADR-0010), so this works for chunk ref_ids under dense/hybrid
+        # modes too. Skip cleanly if the ref_id isn't in either index.
         contributing: list[str] = []
-        if ref_id in adapter._doc_term_counts:
-            doc_counts = adapter._doc_term_counts[ref_id]
+        doc_counts = adapter.term_counts(ref_id)
+        if doc_counts is not None:
             scored_terms = sorted(
                 doc_counts.items(),
                 key=lambda kv: -kv[1] * adapter._contributing_term_weight(kv[0]),

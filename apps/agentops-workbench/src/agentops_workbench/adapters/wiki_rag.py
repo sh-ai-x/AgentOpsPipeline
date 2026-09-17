@@ -1,8 +1,7 @@
-"""WikiRagAdapter -- TF-IDF/BM25 lexical RAG over a directory of Markdown
+"""WikiRagAdapter -- lexical + dense/hybrid RAG over a directory of Markdown
 files (an internal / personal wiki export).
 
-Two selectable retrieval modes, both pure Python (no numpy/scikit-learn,
-matching the dependency-light style of the rest of this package):
+Five selectable retrieval modes (ADR-0010: docs/adr/0010-dense-retrieval-and-reranking.md):
 
 - `retrieval="tfidf"` (default): each document is a TF-IDF vector (term
   frequency within the document, weighted by inverse document frequency
@@ -14,12 +13,24 @@ matching the dependency-light style of the rest of this package):
   term-frequency contribution) and normalizes by document length
   relative to the corpus average -- generally a better lexical ranker
   for wikis with mixed short/long notes.
+- `retrieval="dense"`: chunk-level cosine similarity over a small
+  int8-quantized ONNX embedding model (`fastembed`, CPU-only, no torch).
+  Finds a chunk that shares no vocabulary with the query at all (a
+  synonym or paraphrase) -- the one failure class no lexical mode above
+  can ever recover from.
+- `retrieval="hybrid"`: chunk-level BM25 fused with `dense` via
+  Reciprocal Rank Fusion.
+- `retrieval="hybrid_rerank"`: `hybrid`'s top candidates re-scored by a
+  CPU cross-encoder.
 
-Real vector-embedding search (dense retrieval) is a deliberate
-non-goal here: it needs either a heavy local embedding model (breaks
-the dependency-light design) or a per-query call to a provider's
-embeddings endpoint (network + cost per search). Left as a follow-up
-once that tradeoff is settled.
+`tfidf`/`bm25` above are `_LEXICAL_MODES` -- pure Python, no numpy/
+scikit-learn, matching the dependency-light style of the rest of this
+package, and PROVABLY untouched by the three modes below them (see
+tests/adapters/test_wiki_rag_lexical_frozen.py). The three non-lexical
+modes are gated behind the optional `[dense]` install extra and never
+import `fastembed`/`onnxruntime` unless one of them is actually selected
+-- ADR-0010 has the full cost/RAM-budget accounting for a GPU-less
+8GB deployment.
 
 This is a genuinely separate family of retrieval techniques from
 `mcp.InMemoryDocumentClient`'s pure substring/term-count scoring.
@@ -31,7 +42,7 @@ whatever directory a deployment's wiki export lands in.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from ..mcp import DocRef
@@ -39,7 +50,9 @@ if TYPE_CHECKING:
 
 import math
 import re
+import threading
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -168,12 +181,132 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_VALID_RETRIEVAL_MODES = frozenset({"tfidf", "bm25"})
+_LEXICAL_MODES = frozenset({"tfidf", "bm25"})
+
+# ADR-0010: dense (chunk-level cosine), hybrid (BM25+dense via RRF), and
+# hybrid_rerank (hybrid's top candidates re-scored by a cross-encoder).
+# Strictly additive -- _LEXICAL_MODES' code paths are untouched by their
+# presence; see tests/adapters/test_wiki_rag_lexical_frozen.py.
+_VALID_RETRIEVAL_MODES = _LEXICAL_MODES | frozenset({"dense", "hybrid", "hybrid_rerank"})
 
 # Standard Okapi BM25 free parameters (Robertson & Sparck Jones defaults
 # used by most implementations, e.g. rank_bm25, Lucene's pre-6.0 default).
 _BM25_K1 = 1.5
 _BM25_B = 0.75
+
+# ADR-0010 non-lexical retrieval parameters.
+# A vault capped at MAX_WIKI_DOCS=4096 files yields at most ~20k chunks at
+# _CHUNK_MAX_CHARS-sized pieces; 20k * 384 dims * 4 bytes (float32) = 30MB,
+# an exact brute-force matvec over which is ~10ms -- see ADR-0010 Decision
+# §4 for why this stays a plain matrix rather than pulling in pgvector.
+MAX_WIKI_CHUNKS = 20_000
+_RRF_K = 60                 # Cormack, Clarke & Buttcher (2009) RRF constant
+_RRF_LEG_DEPTH = 50         # candidates pulled from each leg before fusion
+_RERANK_CANDIDATES = 20     # hybrid_rerank: how many fused candidates get scored
+_DENSE_MIN_COSINE = 0.30    # floor below which a dense hit is treated as noise
+_DENSE_MODEL = "BAAI/bge-small-en-v1.5"
+_RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
+
+
+@dataclass(frozen=True)
+class _Chunk:
+    """One chunk of a wiki file, used only by non-lexical retrieval modes."""
+
+    ref_id: str              # f"{parent_ref_id}#c{n}"
+    parent_ref_id: str
+    heading_path: tuple[str, ...]
+    text: str                # heading-prefixed text actually embedded
+    raw_start: int            # offsets into the parent file's raw text
+    raw_end: int
+
+
+class EmbeddingBackend(Protocol):
+    """Seam for the dense encoder (ADR-0010 §3). `fastembed`-backed by
+    default; tests inject a deterministic fake (tests/adapters/_fakes.py)."""
+
+    dim: int
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
+
+    def embed_query(self, text: str) -> list[float]: ...
+
+
+class RerankBackend(Protocol):
+    """Seam for the cross-encoder reranker (ADR-0010 §3)."""
+
+    def rerank(self, query: str, documents: list[str]) -> list[float]: ...
+
+
+# Process-global singleton cache for real embedding/rerank backends, keyed
+# by model name. Deliberately NOT per-adapter: wiki_corpus.DEFAULT_CAP keeps
+# up to 16 corpora alive at once, and a per-adapter model would multiply the
+# ~100-150MB model footprint by that many -- see ADR-0010 §3.
+_BACKEND_CACHE: dict[str, object] = {}
+_BACKEND_LOCK = threading.Lock()
+
+
+class _FastEmbedBackend:
+    """`fastembed`-backed EmbeddingBackend. Imported lazily -- constructing
+    this is the only thing that pulls `fastembed`/`onnxruntime` into the
+    process, and only non-lexical modes ever reach this constructor."""
+
+    dim = 384
+
+    def __init__(self, model_name: str = _DENSE_MODEL) -> None:
+        from fastembed import TextEmbedding  # noqa: PLC0415 - intentionally lazy
+
+        self._model = TextEmbedding(model_name=model_name)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [vec.tolist() for vec in self._model.embed(texts)]
+
+    def embed_query(self, text: str) -> list[float]:
+        return next(iter(self._model.embed([text]))).tolist()
+
+
+class _FastEmbedRerankBackend:
+    """`fastembed`-backed RerankBackend, same lazy-import discipline.
+
+    `TextCrossEncoder.rerank()` returns raw (unbounded, can be negative)
+    logits -- confirmed empirically, not just from docs. Sigmoid-transform
+    them so callers (and the UI's "0-1, higher = more relevant" copy) get an
+    actual probability-like score; sigmoid is monotonic, so ranking order is
+    unaffected.
+    """
+
+    def __init__(self, model_name: str = _RERANK_MODEL) -> None:
+        from fastembed.rerank.cross_encoder import TextCrossEncoder  # noqa: PLC0415
+
+        self._model = TextCrossEncoder(model_name=model_name)
+
+    def rerank(self, query: str, documents: list[str]) -> list[float]:
+        return [1.0 / (1.0 + math.exp(-logit)) for logit in self._model.rerank(query, documents)]
+
+
+def _default_embedding_backend() -> EmbeddingBackend:
+    with _BACKEND_LOCK:
+        key = f"embed:{_DENSE_MODEL}"
+        cached = _BACKEND_CACHE.get(key)
+        if cached is None:
+            cached = _FastEmbedBackend(_DENSE_MODEL)
+            _BACKEND_CACHE[key] = cached
+        return cached  # type: ignore[return-value]
+
+
+def _default_rerank_backend() -> RerankBackend:
+    with _BACKEND_LOCK:
+        key = f"rerank:{_RERANK_MODEL}"
+        cached = _BACKEND_CACHE.get(key)
+        if cached is None:
+            cached = _FastEmbedRerankBackend(_RERANK_MODEL)
+            _BACKEND_CACHE[key] = cached
+        return cached  # type: ignore[return-value]
+
+
+def clear_backend_cache() -> None:
+    """Drop cached embedding/rerank backends. Used by tests."""
+    with _BACKEND_LOCK:
+        _BACKEND_CACHE.clear()
 
 
 class WikiRagAdapter:
@@ -194,7 +327,14 @@ class WikiRagAdapter:
 
     source_kind = "wiki"
 
-    def __init__(self, wiki_dir: str, *, retrieval: str = "tfidf") -> None:
+    def __init__(
+        self,
+        wiki_dir: str,
+        *,
+        retrieval: str = "tfidf",
+        embedder: EmbeddingBackend | None = None,
+        reranker: RerankBackend | None = None,
+    ) -> None:
         if retrieval not in _VALID_RETRIEVAL_MODES:
             raise ValueError(
                 f"retrieval={retrieval!r} is not supported; "
@@ -238,6 +378,25 @@ class WikiRagAdapter:
         self._avgdl = (
             sum(self._doc_lengths.values()) / self._n_docs if self._n_docs else 0.0
         )
+
+        # ADR-0010: chunk/dense/rerank state. Built ONLY for non-lexical
+        # modes -- a tfidf/bm25 adapter never touches any of this, which is
+        # what tests/adapters/test_wiki_rag_lexical_frozen.py enforces.
+        self._chunks: dict[str, _Chunk] = {}
+        self._chunk_term_counts: dict[str, Counter[str]] = {}
+        self._chunk_df: Counter[str] = Counter()
+        self._chunk_lengths: dict[str, int] = {}
+        self._chunk_avgdl: float = 0.0
+        self._embedder: EmbeddingBackend | None = None
+        self._reranker: RerankBackend | None = reranker
+        self._dense_matrix = None  # numpy float32 (N, dim), L2-normalized rows
+        self._dense_ref_ids: list[str] = []
+        if retrieval not in _LEXICAL_MODES:
+            self._build_chunk_index()
+            self._build_chunk_lexical_index()
+            self._embedder = embedder or _default_embedding_backend()
+            self._build_dense_index()
+
     # --- DocumentClient compat shims (for graph/*_*.py which still calls
     # search_docs/read_document by the legacy names) ---
     def search_docs(self, query: str, top_k: int = 5) -> list[DocRef]:
@@ -256,6 +415,172 @@ class WikiRagAdapter:
         """Compat shim: WikiRagAdapter doesn't index filesystem files; return empty."""
         return []
 
+
+    def term_counts(self, ref_id: str) -> Counter[str] | None:
+        """Term-count accessor spanning both whole-file and chunk indices.
+
+        `wiki_corpus.search_with_timing` uses this instead of reaching into
+        `_doc_term_counts` directly, so it works for chunk ref_ids too. For
+        a file ref_id under a lexical mode this returns the identical
+        `Counter` object `_doc_term_counts` already held -- no behaviour
+        change for the lexical path.
+        """
+        if ref_id in self._doc_term_counts:
+            return self._doc_term_counts[ref_id]
+        return self._chunk_term_counts.get(ref_id)
+
+    def _build_chunk_index(self) -> None:
+        from ..chunking import chunk_markdown  # noqa: PLC0415 - avoid a module cycle
+
+        for parent_id, path in self._files.items():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for n, spec in enumerate(chunk_markdown(text)):
+                chunk_id = f"{parent_id}#c{n}"
+                self._chunks[chunk_id] = _Chunk(
+                    ref_id=chunk_id,
+                    parent_ref_id=parent_id,
+                    heading_path=spec.heading_path,
+                    text=spec.text,
+                    raw_start=spec.raw_start,
+                    raw_end=spec.raw_end,
+                )
+        if len(self._chunks) > MAX_WIKI_CHUNKS:
+            raise MCPError(
+                "unsupported_capability",
+                f"wiki_dir {self._wiki_dir!r} produced {len(self._chunks)} chunks "
+                f"under retrieval={self._retrieval!r}; WikiRagAdapter caps "
+                f"non-lexical modes at MAX_WIKI_CHUNKS={MAX_WIKI_CHUNKS}. Narrow "
+                f"the corpus or raise MAX_WIKI_CHUNKS at your own risk.",
+                source="wiki_rag",
+            )
+
+    def _build_chunk_lexical_index(self) -> None:
+        """Chunk-level BM25 term stats, mirroring the file-level index above
+        (independent counters -- the file-level ones stay untouched)."""
+        for chunk_id, chunk in self._chunks.items():
+            counts = Counter(_tokenize(chunk.text))
+            self._chunk_term_counts[chunk_id] = counts
+            for term in counts:
+                self._chunk_df[term] += 1
+            self._chunk_lengths[chunk_id] = sum(counts.values())
+        n_chunks = len(self._chunks)
+        self._chunk_avgdl = (
+            sum(self._chunk_lengths.values()) / n_chunks if n_chunks else 0.0
+        )
+
+    def _build_dense_index(self) -> None:
+        import numpy as np  # noqa: PLC0415 - lazy: only non-lexical modes need it
+
+        chunk_ids = list(self._chunks)
+        if not chunk_ids:
+            return
+        assert self._embedder is not None
+        vectors = self._embedder.embed_documents([self._chunks[c].text for c in chunk_ids])
+        matrix = np.asarray(vectors, dtype="float32")
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        self._dense_matrix = matrix / norms
+        self._dense_ref_ids = chunk_ids
+
+    def _dense_candidates(self, query: str, depth: int) -> list[tuple[str, float]]:
+        if self._dense_matrix is None or not self._dense_ref_ids:
+            return []
+        import numpy as np  # noqa: PLC0415
+
+        assert self._embedder is not None
+        qvec = np.asarray(self._embedder.embed_query(query), dtype="float32")
+        qnorm = float(np.linalg.norm(qvec))
+        if qnorm == 0.0:
+            return []
+        qvec = qvec / qnorm
+        sims = self._dense_matrix @ qvec
+        order = np.argsort(-sims)[:depth]
+        out: list[tuple[str, float]] = []
+        for idx in order:
+            score = float(sims[idx])
+            if score < _DENSE_MIN_COSINE:
+                continue
+            out.append((self._dense_ref_ids[int(idx)], score))
+        return out
+
+    def _chunk_bm25_idf(self, term: str) -> float:
+        df = self._chunk_df.get(term, 0)
+        n = len(self._chunks)
+        return math.log((n - df + 0.5) / (df + 0.5) + 1.0)
+
+    def _chunk_bm25_candidates(
+        self, query_terms: Counter[str], depth: int
+    ) -> list[tuple[str, float]]:
+        scored: list[tuple[str, float]] = []
+        for chunk_id, counts in self._chunk_term_counts.items():
+            doc_len = self._chunk_lengths[chunk_id]
+            score = 0.0
+            for term in query_terms:
+                tf = counts.get(term, 0)
+                if tf == 0:
+                    continue
+                idf = self._chunk_bm25_idf(term)
+                denom = tf + _BM25_K1 * (
+                    1 - _BM25_B + _BM25_B * (doc_len / self._chunk_avgdl)
+                )
+                score += idf * (tf * (_BM25_K1 + 1)) / denom
+            if score > 0.0:
+                scored.append((chunk_id, score))
+        scored.sort(key=lambda kv: -kv[1])
+        return scored[:depth]
+
+    def _rrf_fuse(self, *rank_lists: list[tuple[str, float]]) -> list[tuple[str, float]]:
+        """Reciprocal Rank Fusion (Cormack, Clarke & Buttcher 2009)."""
+        scores: dict[str, float] = {}
+        for ranked in rank_lists:
+            for rank, (chunk_id, _score) in enumerate(ranked):
+                scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (_RRF_K + rank + 1)
+        return sorted(scores.items(), key=lambda kv: -kv[1])
+
+    def _rerank(
+        self, query: str, candidates: list[tuple[str, float]]
+    ) -> list[tuple[str, float]]:
+        if not candidates:
+            return []
+        top = candidates[:_RERANK_CANDIDATES]
+        if self._reranker is None:
+            self._reranker = _default_rerank_backend()
+        docs = [self._chunks[chunk_id].text for chunk_id, _ in top]
+        scores = self._reranker.rerank(query, docs)
+        reranked = list(zip((chunk_id for chunk_id, _ in top), scores, strict=True))
+        reranked.sort(key=lambda kv: -kv[1])
+        return reranked
+
+    def _search_chunked(self, query: str, top_k: int) -> list[EvidenceRef]:
+        query_terms = Counter(_tokenize(query))
+        if not query_terms or not self._chunks:
+            return []
+        retrieved_at = _now_iso()
+
+        if self._retrieval == "dense":
+            ranked = self._dense_candidates(query, depth=max(top_k, _RRF_LEG_DEPTH))
+        else:
+            dense_ranked = self._dense_candidates(query, depth=_RRF_LEG_DEPTH)
+            bm25_ranked = self._chunk_bm25_candidates(query_terms, depth=_RRF_LEG_DEPTH)
+            fused = self._rrf_fuse(dense_ranked, bm25_ranked)
+            ranked = self._rerank(query, fused) if self._retrieval == "hybrid_rerank" else fused
+
+        out: list[EvidenceRef] = []
+        for chunk_id, score in ranked[:top_k]:
+            chunk = self._chunks[chunk_id]
+            parent_title = chunk.parent_ref_id.replace("-", " ").replace("_", " ")
+            heading = " > ".join(chunk.heading_path)
+            title = f"{parent_title} :: {heading}" if heading else parent_title
+            out.append(
+                EvidenceRef(
+                    ref_id=chunk_id,
+                    title=title,
+                    score=score,
+                    source_kind=self.source_kind,
+                    retrieved_at=retrieved_at,
+                )
+            )
+        return out
 
     def _idf(self, term: str) -> float:
         # Smoothed IDF: ln((1 + N) / (1 + df)) + 1 -- never zero, never
@@ -320,6 +645,8 @@ class WikiRagAdapter:
         window: tuple[str, str] | None = None,
         filters: dict | None = None,
     ) -> list[EvidenceRef]:
+        if self._retrieval not in _LEXICAL_MODES:
+            return self._search_chunked(query, top_k)
         query_terms = Counter(_tokenize(query))
         if not query_terms or not self._files:
             return []
@@ -344,10 +671,18 @@ class WikiRagAdapter:
 
     def read_evidence(self, ref_id: str, offset: int = 0, limit: int = 2000) -> str:
         path = self._files.get(ref_id)
-        if path is None or not path.exists():
-            raise MCPError("unknown", f"wiki page not found: {ref_id}", source="wiki_rag")
-        text = path.read_text(encoding="utf-8", errors="replace")
-        return text[offset : offset + limit]
+        if path is not None:
+            if not path.exists():
+                raise MCPError("unknown", f"wiki page not found: {ref_id}", source="wiki_rag")
+            text = path.read_text(encoding="utf-8", errors="replace")
+            return text[offset : offset + limit]
+        chunk = self._chunks.get(ref_id)
+        if chunk is not None:
+            parent_path = self._files[chunk.parent_ref_id]
+            full_text = parent_path.read_text(encoding="utf-8", errors="replace")
+            raw = full_text[chunk.raw_start : chunk.raw_end]
+            return raw[offset : offset + limit]
+        raise MCPError("unknown", f"wiki page not found: {ref_id}", source="wiki_rag")
 
 
 # Module-level cache keyed by `wiki_dir`. Multiple `run_planner_executor`

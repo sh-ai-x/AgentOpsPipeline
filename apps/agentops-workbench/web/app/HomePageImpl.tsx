@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import MetricsPanel from "./MetricsPanel";
 
@@ -69,12 +69,39 @@ type ChatMessage =
       // resolve to real evidence, not whether the underlying claim is
       // actually supported by them).
       faithfulness: number;
+      // Captured at send time, not read live -- so a turn always shows
+      // which mode actually produced ITS answer, even if the operator
+      // switches either dropdown before the next turn.
+      retrieval: RetrievalMode;
+      provider: Provider;
     };
+
+// ADR-0010: tfidf/bm25 are the original lexical modes; dense/hybrid/
+// hybrid_rerank are CPU-only additions (a small ONNX embedding model +
+// optional cross-encoder rerank) -- see README's "Retrieval algorithm"
+// section and docs/adr/0010-dense-retrieval-and-reranking.md.
+type RetrievalMode = "tfidf" | "bm25" | "dense" | "hybrid" | "hybrid_rerank";
+
+// LLM provider for the chat/answer call (independent of retrieval mode
+// above, which only affects search). API keys are never sent to or read
+// by the browser -- they live server-side in `.env`; the picker only
+// selects which server-side key gets used. `GET /v1/wiki/providers`
+// reports which of these actually have a key configured.
+type Provider = "local-fake" | "minimax" | "openai";
+
+type ProvidersResponse = {
+  available: Provider[];
+  default: Provider;
+};
 
 type IndexResponse = {
   corpus_id: string;
   doc_count: number;
   duration_ms: number;
+  // The mode that actually got resolved (server-side default applies when
+  // the request omitted `retrieval`) -- used to attribute the metrics
+  // dashboard below to the mode that produced its numbers.
+  retrieval: RetrievalMode;
 };
 
 // Mirrors the server's SKIP_DIR_NAMES so client and server agree on
@@ -189,18 +216,60 @@ function groundednessColor(score: number): string {
 // data (not scattered prose) so "search" and "qa" can render the same
 // entries consistently and so the numbers are never explained differently
 // in two places.
+// The "score" doc entry is mode-specific -- tfidf/bm25/dense/hybrid/
+// hybrid_rerank each put it on a different scale (ADR-0010 Consequences),
+// so it's computed per-mode rather than stated as one fixed fact.
+function scoreMetricDoc(retrieval: RetrievalMode): { label: string; meaning: string; why: string } {
+  switch (retrieval) {
+    case "bm25":
+      return {
+        label: "score",
+        meaning:
+          "Okapi BM25 score (unbounded, not 0–1). Higher = more relevant; saturates a repeated term instead of scoring it near-linearly.",
+        why:
+          "BM25 also normalizes for document length, so a short note and a long one are compared fairly on the same term.",
+      };
+    case "dense":
+      return {
+        label: "score",
+        meaning:
+          "Cosine similarity between your query and this chunk's embedding, 0–1. Higher = more semantically similar.",
+        why:
+          "Captures meaning even when the wording differs entirely (a synonym or a paraphrase) — something lexical (TF-IDF/BM25) search cannot do.",
+      };
+    case "hybrid":
+      return {
+        label: "score",
+        meaning:
+          "Reciprocal Rank Fusion (RRF) score combining a lexical (BM25) and a semantic (dense) ranking, typically ~0.01–0.03. Higher = more relevant — not a similarity percentage.",
+        why:
+          "Combines exact-term matching with semantic matching so a query can find a document via either path.",
+      };
+    case "hybrid_rerank":
+      return {
+        label: "score",
+        meaning:
+          "Cross-encoder relevance score after re-ranking hybrid's top candidates, 0–1. Higher = more relevant.",
+        why:
+          "A cross-encoder reads the query and the chunk together, which is more precise than scoring them separately — at extra per-query latency.",
+      };
+    case "tfidf":
+    default:
+      return {
+        label: "score",
+        meaning:
+          "TF-IDF-weighted cosine similarity between your query and this document, 0–1. Higher = more relevant.",
+        why:
+          "TF-IDF + cosine is a standard, well-understood retrieval technique — not a bespoke heuristic — so it needs no embedding service and the number means the same thing anyone else measuring TF-IDF similarity would get.",
+      };
+  }
+}
+
 const METRIC_DOCS: Record<
   "search" | "qa",
   { label: string; meaning: string; why: string }[]
 > = {
   search: [
-    {
-      label: "score",
-      meaning:
-        "TF-IDF-weighted cosine similarity between your query and this document, 0–1. Higher = more relevant.",
-      why:
-        "TF-IDF + cosine is a standard, well-understood retrieval technique — not a bespoke heuristic — so it needs no embedding service and the number means the same thing anyone else measuring TF-IDF similarity would get.",
-    },
     {
       label: "coverage",
       meaning:
@@ -240,12 +309,37 @@ const METRIC_DOCS: Record<
   ],
 };
 
-function MetricsGuide({ topic }: { topic: "search" | "qa" }) {
+// FastAPI's HTTPException body is `{"detail": "..."}`. Surface just that
+// string when present -- e.g. the LLM-provider-error messages server.py
+// mints for quota/rate-limit/auth/network failures (see llm/errors.py) --
+// rather than dumping the raw JSON blob into the error banner.
+async function extractErrorDetail(r: Response): Promise<string> {
+  const text = await r.text();
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (typeof parsed.detail === "string" && parsed.detail) {
+      return parsed.detail;
+    }
+  } catch {
+    // Not JSON -- fall through to the raw text below.
+  }
+  return `${r.status} ${text}`;
+}
+
+function MetricsGuide({
+  topic,
+  retrieval = "tfidf",
+}: {
+  topic: "search" | "qa";
+  retrieval?: RetrievalMode;
+}) {
+  const rows =
+    topic === "search" ? [scoreMetricDoc(retrieval), ...METRIC_DOCS.search] : METRIC_DOCS.qa;
   return (
     <details className="metrics-guide">
       <summary>What do these numbers mean?</summary>
       <dl>
-        {METRIC_DOCS[topic].map((m) => (
+        {rows.map((m) => (
           <div className="metrics-guide-row" key={m.label}>
             <dt>{m.label}</dt>
             <dd>
@@ -289,7 +383,23 @@ export default function HomePageImpl() {
   // "Retrieval algorithm" section. Applies at index time; switching
   // this after a directory is already picked has no effect until the
   // next pick (re-indexing doesn't happen automatically).
-  const [retrieval, setRetrieval] = useState<"tfidf" | "bm25">("tfidf");
+  const [retrieval, setRetrieval] = useState<RetrievalMode>("tfidf");
+  // The mode actually resolved by the last index-files call -- may differ
+  // from `retrieval` above if the server fell back to its own default.
+  // Drives the metrics dashboard's mode-attribution subtitle.
+  const [resolvedRetrieval, setResolvedRetrieval] = useState<RetrievalMode>("tfidf");
+  // LLM provider for the chat call. `null` until `/v1/wiki/providers`
+  // responds, at which point it's set to the server's configured default
+  // -- so a picker render always reflects a real, key-backed choice.
+  const [provider, setProvider] = useState<Provider | null>(null);
+  const [availableProviders, setAvailableProviders] = useState<Provider[]>(["local-fake"]);
+  // Per-provider live status, keyed by provider name. `undefined` = never
+  // checked (a manual click on the status dot triggers the real test call
+  // -- POST /v1/wiki/providers/{provider}/check spends a small amount of
+  // real money on that provider, so this is never automatic).
+  const [providerStatus, setProviderStatus] = useState<
+    Record<string, "checking" | "ok" | "unconfigured" | "quota_exceeded" | "rate_limited" | "auth_failed" | "unavailable" | "unknown">
+  >({});
   // Chat state -- multi-turn transcript.
   // `messages` holds the full conversation so the operator can scroll
   // back through prior turns; `chatInput` is the unsent draft. `threadId`
@@ -301,6 +411,9 @@ export default function HomePageImpl() {
   const [chatInput, setChatInput] = useState("");
   const [threadId, setThreadId] = useState<string | null>(null);
   const [expandedTurns, setExpandedTurns] = useState<Set<number>>(new Set());
+  // Lets "Cancel" abort an in-flight /v1/wiki/qa call. Not state -- it
+  // doesn't need to trigger a re-render, only `busy` does that.
+  const chatAbortRef = useRef<AbortController | null>(null);
 
   const authHeaders = useCallback(
     (): Record<string, string> => (bearer ? { Authorization: `Bearer ${bearer}` } : {}),
@@ -348,6 +461,30 @@ export default function HomePageImpl() {
     };
   }, []);
 
+  // Once authenticated, ask the server which LLM providers actually have
+  // a key configured (`local-fake` always does) so the picker never offers
+  // a choice that would just 400 on the first chat turn.
+  useEffect(() => {
+    if (!bearer) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/v1/wiki/providers", {
+          headers: { Authorization: `Bearer ${bearer}` },
+        });
+        if (!r.ok || cancelled) return;
+        const data = (await r.json()) as ProvidersResponse;
+        setAvailableProviders(data.available);
+        setProvider((prev) => prev ?? data.default);
+      } catch {
+        // silent -- picker just falls back to local-fake only.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [bearer]);
+
   // ----- AC1: directory picker -----
   async function onPickDirectory() {
     setError(null);
@@ -380,7 +517,7 @@ export default function HomePageImpl() {
       const uploadBody: {
         files: typeof files;
         vault_name?: string;
-        retrieval: "tfidf" | "bm25";
+        retrieval: RetrievalMode;
       } = { files, retrieval };
       if (hasObsidian) {
         uploadBody.vault_name = root.name ?? "vault";
@@ -390,11 +527,12 @@ export default function HomePageImpl() {
         headers: { ...authHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify(uploadBody),
       });
-      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+      if (!r.ok) throw new Error(await extractErrorDetail(r));
       const idx = (await r.json()) as IndexResponse;
       setCorpusId(idx.corpus_id);
       setDocCount(idx.doc_count);
       setIndexDurationMs(idx.duration_ms);
+      setResolvedRetrieval(idx.retrieval);
       // Surface a one-line "obsidian vault detected" hint so the
       // operator knows hits will be Obsidian deep links rather than
       // generic file:// paths.
@@ -422,6 +560,10 @@ export default function HomePageImpl() {
     e.preventDefault();
     const text = chatInput.trim();
     if (!text || !bearer || !corpusId || busy) return;
+    // Captured now, not read live later -- if `provider` omitted, the
+    // server falls back to its own configured default, so mirror that
+    // here for the badge rather than showing a blank/null provider.
+    const sentProvider: Provider = provider ?? "local-fake";
     setBusy(true);
     setError(null);
     // Optimistically append the user turn so the UI updates immediately,
@@ -436,6 +578,8 @@ export default function HomePageImpl() {
       { role: "user", content: text },
     ]);
     setChatInput("");
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
     try {
       const r = await fetch("/api/v1/wiki/qa", {
         method: "POST",
@@ -445,9 +589,11 @@ export default function HomePageImpl() {
           query: text,
           top_k: topK,
           ...(threadId ? { thread_id: threadId } : {}),
+          ...(provider ? { provider } : {}),
         }),
+        signal: controller.signal,
       });
-      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+      if (!r.ok) throw new Error(await extractErrorDetail(r));
       const data = (await r.json()) as QaResponse;
       setThreadId(data.thread_id);
       setMessages((prev) => [
@@ -461,13 +607,75 @@ export default function HomePageImpl() {
           citation_recall: data.citation_recall,
           citation_precision: data.citation_precision,
           faithfulness: data.faithfulness,
+          retrieval: resolvedRetrieval,
+          provider: sentProvider,
         },
       ]);
     } catch (err) {
-      setError((err as Error).message);
+      const e2 = err as Error & { name?: string };
+      if (e2.name === "AbortError") {
+        // User hit Cancel -- no error banner, no assistant turn. A plain
+        // fetch abort only stops the CLIENT from waiting; it doesn't
+        // propagate to the server, so the LangGraph turn may still finish
+        // in the background and land in that thread's history. Good
+        // enough for "stop waiting and let me ask something else" --
+        // true mid-generation interruption would need a streaming
+        // endpoint, which /v1/wiki/qa isn't.
+        setError(null);
+      } else {
+        setError((err as Error).message);
+      }
     } finally {
       setBusy(false);
+      chatAbortRef.current = null;
     }
+  }
+
+  function onCancelSend() {
+    chatAbortRef.current?.abort();
+  }
+
+  // Manual, explicit trigger only -- this makes one real test call against
+  // the provider's API (a few tokens), so it must never fire automatically
+  // (on mount, on an interval, etc.).
+  async function checkProviderStatus(p: Provider) {
+    setProviderStatus((prev) => ({ ...prev, [p]: "checking" }));
+    try {
+      const r = await fetch(`/api/v1/wiki/providers/${p}/check`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      if (!r.ok) {
+        setProviderStatus((prev) => ({ ...prev, [p]: "unknown" }));
+        return;
+      }
+      const data = (await r.json()) as { provider: string; status: string };
+      setProviderStatus((prev) => ({ ...prev, [p]: data.status as (typeof prev)[string] }));
+    } catch {
+      setProviderStatus((prev) => ({ ...prev, [p]: "unknown" }));
+    }
+  }
+
+  function providerStatusColor(status: string | undefined): string {
+    if (status === "ok") return "#16a34a";
+    if (status === "checking") return "#9ca3af";
+    if (status === undefined) return "#d1d5db";
+    return "#dc2626"; // unconfigured / quota_exceeded / rate_limited / auth_failed / unavailable / unknown
+  }
+
+  function providerStatusLabel(status: string | undefined): string {
+    if (status === undefined) return "not checked yet — click to test";
+    const labels: Record<string, string> = {
+      checking: "checking…",
+      ok: "working",
+      unconfigured: "no API key configured",
+      quota_exceeded: "out of credits/quota",
+      rate_limited: "rate-limited right now",
+      auth_failed: "API key rejected",
+      unavailable: "network error / unreachable",
+      unknown: "check failed for an unknown reason",
+    };
+    return labels[status] ?? status;
   }
 
   return (
@@ -507,19 +715,29 @@ export default function HomePageImpl() {
             Retrieval:
             <select
               value={retrieval}
-              onChange={(e) => setRetrieval(e.target.value as "tfidf" | "bm25")}
+              onChange={(e) => setRetrieval(e.target.value as RetrievalMode)}
               disabled={busy}
               title="Applies when you pick a directory -- see README's Retrieval algorithm section"
             >
               <option value="tfidf">TF-IDF (cosine)</option>
               <option value="bm25">BM25</option>
+              <option value="dense">Dense (bge-small, ONNX)</option>
+              <option value="hybrid">Hybrid: BM25 + dense (RRF)</option>
+              <option value="hybrid_rerank">Hybrid + cross-encoder rerank</option>
             </select>
           </label>
+          {retrieval !== "tfidf" && retrieval !== "bm25" && (
+            <span className="muted" style={{ fontSize: "0.85em" }}>
+              first pick with this mode downloads ~150MB of model weights and
+              takes ~10–30s — this is expected, not a hang.
+            </span>
+          )}
         </div>
         {corpusId && (
           <p className="status">
             ✓ indexed <strong>{docCount}</strong> file
             {docCount === 1 ? "" : "s"} in <strong>{indexDurationMs}ms</strong>
+            {" "}(retrieval: <strong>{resolvedRetrieval}</strong>)
             {isObsidianVault && (
               <span className="muted"> · Obsidian vault detected — references open in Obsidian</span>
             )}
@@ -532,7 +750,63 @@ export default function HomePageImpl() {
       {corpusId && (
         <>
           <section className="card">
-            <h2>2. Chat (multi-turn)</h2>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <h2 style={{ margin: 0 }}>2. Chat (multi-turn)</h2>
+              <label className="muted" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                Provider:
+                <select
+                  value={provider ?? ""}
+                  onChange={(e) => setProvider(e.target.value as Provider)}
+                  disabled={busy || !provider}
+                  title="Which server-side LLM key answers the next question. Keys are configured in .env, never sent from the browser."
+                >
+                  {availableProviders.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {availableProviders.length === 1 && (
+                <span className="muted" style={{ fontSize: "0.85em" }}>
+                  only local-fake is available — set AGENTOPS_MINIMAX_API_KEY or
+                  AGENTOPS_OPENAI_API_KEY in .env to unlock a real provider.
+                </span>
+              )}
+              {availableProviders
+                .filter((p) => p !== "local-fake")
+                .map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => checkProviderStatus(p)}
+                    disabled={providerStatus[p] === "checking"}
+                    title={`${p}: ${providerStatusLabel(providerStatus[p])} — click to make one real test call (small cost)`}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: "0.85em",
+                      background: "none",
+                      border: "1px solid var(--border)",
+                      borderRadius: 999,
+                      padding: "2px 10px",
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        display: "inline-block",
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: providerStatusColor(providerStatus[p]),
+                      }}
+                    />
+                    {p}
+                  </button>
+                ))}
+            </div>
             <MetricsGuide topic="qa" />
             <p className="muted" style={{ marginTop: -4 }}>
               Each follow-up question uses the prior turn's context
@@ -557,6 +831,9 @@ export default function HomePageImpl() {
                   </div>
                 ) : (
                   <div className="chat-turn assistant" key={i}>
+                    <p className="muted" style={{ marginBottom: 4, fontSize: "0.8em" }}>
+                      retrieval: <strong>{m.retrieval}</strong> · provider: <strong>{m.provider}</strong>
+                    </p>
                     <p className="overall" style={{ marginBottom: 8 }}>
                       <strong>ROUGE-L F1</strong>
                       <span className="badge" style={{ backgroundColor: groundednessColor(m.overall_rouge_l_f1) }}>
@@ -705,6 +982,15 @@ export default function HomePageImpl() {
                   </div>
                 ),
               )}
+              {busy && messages.length > 0 && messages[messages.length - 1].role === "user" && (
+                <div className="chat-turn assistant" key="thinking">
+                  <div className="chat-bubble chat-thinking">
+                    <span className="chat-spinner" aria-hidden="true" />
+                    Thinking{provider && provider !== "local-fake" ? ` (${provider})` : ""}
+                    {retrieval !== "tfidf" && retrieval !== "bm25" ? " — retrieving with " + retrieval + "…" : "…"}
+                  </div>
+                </div>
+              )}
             </div>
 
             <form onSubmit={onSend} className="search-row">
@@ -722,15 +1008,21 @@ export default function HomePageImpl() {
                 style={{ flex: "0 0 72px" }}
                 title="top_k: how many documents to retrieve per turn"
               />
-              <button type="submit" className="primary" disabled={busy || !chatInput.trim()}>
-                {busy ? "..." : "Send"}
-              </button>
+              {busy ? (
+                <button type="button" onClick={onCancelSend}>
+                  Cancel
+                </button>
+              ) : (
+                <button type="submit" className="primary" disabled={!chatInput.trim()}>
+                  Send
+                </button>
+              )}
             </form>
           </section>
         </>
       )}
 
-      <MetricsPanel bearer={bearer} />
+      <MetricsPanel bearer={bearer} retrieval={corpusId ? resolvedRetrieval : null} />
 
       {error && (
         <p className="status" style={{ color: "var(--accent)" }}>

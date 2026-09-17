@@ -43,6 +43,7 @@ from langgraph.graph import END, StateGraph
 
 from .. import groundedness, wiki_corpus
 from ..llm.adapter import LLMAdapter
+from ..llm.errors import LLMProviderError
 from ..observability.otel import Tracer
 
 _QA_PROMPT = (
@@ -51,7 +52,8 @@ _QA_PROMPT = (
     "footnote number matching the evidence's own numbering, e.g. [1]. "
     "Use only the numbers shown before each evidence block -- do not "
     "invent numbers or cite source paths directly. If the evidence "
-    "does not support a claim, refuse explicitly rather than guessing.\n\n"
+    "does not support a claim, refuse explicitly rather than guessing. "
+    "Answer in 2-3 paragraphs.\n\n"
     "Question: {query}\n\n## Evidence\n\n{evidence_blob}\n\n## Answer\n"
 )
 
@@ -136,6 +138,7 @@ class _WikiChatState(TypedDict, total=False):
     overall_rouge_l_f1: float
     citation_recall: float
     citation_precision: float
+    faithfulness: float
 
 
 def _retrieve_node(state: _WikiChatState, config: RunnableConfig) -> dict[str, Any]:
@@ -198,9 +201,16 @@ def _answer_node(state: _WikiChatState, config: RunnableConfig) -> dict[str, Any
     try:
         chat = adapter.chat(prompt_messages, max_tokens=2048)
         raw_answer = (chat.content or "").strip()
-    except Exception:
+    except Exception as exc:
+        # `LLMAdapter.chat()` implementations classify their own provider's
+        # exceptions into `LLMProviderError` (quota_exceeded / rate_limited
+        # / auth_failed / unavailable / unknown) before raising -- tag the
+        # span with that classification so a trace tells an operator WHY a
+        # turn failed, not just that it did. Re-raised unchanged; the API
+        # layer (`server.py::wiki_qa`) turns it into a proper HTTP status.
         if tracer and span:
-            tracer.end(span, status="error")
+            kind = exc.kind if isinstance(exc, LLMProviderError) else "unknown"
+            tracer.end(span, status="error", extra={"error_kind": kind})
         raise
     if tracer and span:
         tracer.end(span)

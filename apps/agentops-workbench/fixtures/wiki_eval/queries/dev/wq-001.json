@@ -1,0 +1,10 @@
+{
+  "id": "wq-001",
+  "family_id": "single_hop",
+  "query": "What does the PostgresCheckpointer do?",
+  "relevant_refs": ["langgraph__checkpointing"],
+  "partially_relevant_refs": [],
+  "relevant_sections": ["langgraph__checkpointing :: Checkpointing > Postgres checkpointer"],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}
