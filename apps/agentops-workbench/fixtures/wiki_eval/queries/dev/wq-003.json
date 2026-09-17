@@ -1,0 +1,13 @@
+{
+  "id": "wq-003",
+  "family_id": "multi_hop",
+  "query": "How does the graph persist state and how does a run pick it back up after a crash?",
+  "relevant_refs": ["langgraph__checkpointing", "langgraph__resume-runs"],
+  "partially_relevant_refs": [],
+  "relevant_sections": [
+    "langgraph__checkpointing",
+    "langgraph__resume-runs"
+  ],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

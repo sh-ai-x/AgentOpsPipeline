@@ -115,6 +115,65 @@ def test_index_files_rejects_unknown_retrieval_mode(client: TestClient, bearer: 
     assert r.status_code == 422
 
 
+def test_index_files_response_echoes_the_resolved_retrieval_mode(
+    client: TestClient, bearer: dict
+) -> None:
+    """ADR-0010 §4.5: the dashboard needs to attribute its numbers to the
+    mode that produced them, so the index-files response must say which
+    mode actually got resolved (not just echo what the client asked for --
+    a client that omits `retrieval` falls back to the settings default)."""
+    payload = {
+        "files": [{"path": "a.md", "content": "hello world", "mtime": 0}],
+        "retrieval": "bm25",
+    }
+    r = client.post("/v1/wiki/index-files", json=payload, headers=bearer)
+    assert r.status_code == 200, r.text
+    assert r.json()["retrieval"] == "bm25"
+
+
+@pytest.mark.parametrize("mode", ["dense", "hybrid", "hybrid_rerank"])
+def test_index_files_accepts_non_lexical_modes_with_an_injected_backend(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """These modes need a real embedder in production; here we monkeypatch
+    the module-level default so the API contract (a 200 + working search)
+    is exercised without a network call or a real model download."""
+    from tests.adapters._fakes import FakeEmbeddingBackend, FakeRerankBackend
+
+    monkeypatch.setattr(
+        "agentops_workbench.adapters.wiki_rag._default_embedding_backend",
+        lambda: FakeEmbeddingBackend(keyword_vectors={"postgresql": [1.0], "checkpointing": [1.0]}),
+    )
+    monkeypatch.setattr(
+        "agentops_workbench.adapters.wiki_rag._default_rerank_backend",
+        lambda: FakeRerankBackend(),
+    )
+    payload = {
+        "files": [
+            {
+                "path": "notes/install.md",
+                "content": "# Install\nInstall LangGraph with PostgreSQL checkpointing.\n",
+                "mtime": 0,
+            },
+        ],
+        "retrieval": mode,
+    }
+    r = client.post("/v1/wiki/index-files", json=payload, headers=bearer)
+    assert r.status_code == 200, r.text
+    assert r.json()["retrieval"] == mode
+    corpus_id = r.json()["corpus_id"]
+
+    r = client.get(
+        "/v1/wiki/search",
+        params={"corpus_id": corpus_id, "q": "postgresql checkpointing", "top_k": 5},
+        headers=bearer,
+    )
+    assert r.status_code == 200, r.text
+    hits = r.json()["results"]
+    assert hits
+    assert hits[0]["source_path"] == "notes/install.md"
+
+
 def test_index_files_rejects_unsafe_paths(client: TestClient, bearer: dict) -> None:
     payload = {
         "files": [
@@ -296,7 +355,7 @@ def test_qa_returns_per_sentence_groundedness(
         def close(self) -> None:
             pass
 
-    def _stub_factory(_settings):
+    def _stub_factory(_settings, **_kwargs):
         return _StubAdapter()
 
     monkeypatch.setattr(server_mod, "make_adapter", _stub_factory)
@@ -352,6 +411,306 @@ def test_qa_returns_404_for_unknown_corpus(client: TestClient, bearer: dict) -> 
         headers=bearer,
     )
     assert r.status_code == 404
+
+
+# ---- LLM provider error handling (quota/rate-limit/auth/network) ----
+
+
+def _index_one_file(client: TestClient, bearer: dict) -> str:
+    r = client.post(
+        "/v1/wiki/index-files",
+        json={
+            "files": [
+                {"path": "ref.md", "content": "PostgresSaver writes durable checkpoints.", "mtime": 0}
+            ]
+        },
+        headers=bearer,
+    )
+    return r.json()["corpus_id"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_status", "expected_detail_substring"),
+    [
+        ("quota_exceeded", 429, "run out of credits"),
+        ("rate_limited", 429, "rate-limiting"),
+        ("auth_failed", 502, "rejected the configured API key"),
+        ("unavailable", 502, "Could not reach"),
+        ("unknown", 502, "API call failed"),
+    ],
+)
+def test_qa_maps_llm_provider_errors_to_friendly_http_responses(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch,
+    kind: str, expected_status: int, expected_detail_substring: str,
+) -> None:
+    """Regression: a MiniMax quota-exhaustion error used to propagate as an
+    unhandled 500 with no actionable message (see llm/errors.py)."""
+    from agentops_workbench.api import server as server_mod
+    from agentops_workbench.llm.errors import LLMProviderError
+
+    corpus_id = _index_one_file(client, bearer)
+
+    class _FailingAdapter:
+        last_usage = None
+
+        def chat(self, messages, **kwargs):
+            raise LLMProviderError(kind, "minimax", "simulated failure")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(server_mod, "make_adapter", lambda _s, **_kw: _FailingAdapter())
+
+    r = client.post(
+        "/v1/wiki/qa",
+        json={"corpus_id": corpus_id, "query": "what does PostgresSaver do"},
+        headers=bearer,
+    )
+    assert r.status_code == expected_status, r.text
+    assert expected_detail_substring in r.json()["detail"]
+
+
+# ---- LLM provider picker (UI provider selection, keys stay server-side) ----
+
+
+def test_providers_endpoint_requires_auth(client: TestClient) -> None:
+    r = client.get("/v1/wiki/providers")
+    assert r.status_code == 401
+
+
+def test_providers_endpoint_always_lists_local_fake(client: TestClient, bearer: dict) -> None:
+    r = client.get("/v1/wiki/providers", headers=bearer)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "local-fake" in body["available"]
+    assert body["default"] == "local-fake"
+
+
+def test_providers_endpoint_lists_openai_only_when_a_key_is_configured(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agentops_workbench.settings as settings_mod
+
+    monkeypatch.setenv("AGENTOPS_OPENAI_API_KEY", "sk-test")
+    settings_mod._settings = None
+    try:
+        r = client.get("/v1/wiki/providers", headers=bearer)
+        assert r.status_code == 200, r.text
+        assert "openai" in r.json()["available"]
+    finally:
+        settings_mod._settings = None
+
+
+def test_providers_endpoint_never_includes_key_values(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agentops_workbench.settings as settings_mod
+
+    monkeypatch.setenv("AGENTOPS_OPENAI_API_KEY", "sk-super-secret-value")
+    settings_mod._settings = None
+    try:
+        r = client.get("/v1/wiki/providers", headers=bearer)
+        assert "sk-super-secret-value" not in r.text
+    finally:
+        settings_mod._settings = None
+
+
+def test_check_provider_requires_auth(client: TestClient) -> None:
+    r = client.post("/v1/wiki/providers/openai/check")
+    assert r.status_code == 401
+
+
+def test_check_provider_local_fake_is_always_ok(client: TestClient, bearer: dict) -> None:
+    r = client.post("/v1/wiki/providers/local-fake/check", headers=bearer)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"provider": "local-fake", "status": "ok"}
+
+
+def test_check_provider_reports_unconfigured_when_no_key_is_set(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This worktree's own .env may configure a real (possibly broken) key --
+    # explicitly clear it so this test exercises the "no key at all" case
+    # regardless of local dev setup.
+    monkeypatch.setenv("AGENTOPS_OPENAI_API_KEY", "")
+    import agentops_workbench.settings as settings_mod
+    settings_mod._settings = None
+    try:
+        r = client.post("/v1/wiki/providers/openai/check", headers=bearer)
+    finally:
+        settings_mod._settings = None
+    assert r.status_code == 200, r.text
+    assert r.json() == {"provider": "openai", "status": "unconfigured"}
+
+
+def test_check_provider_makes_a_real_call_and_reports_the_classified_failure(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured-but-broken key (e.g. quota exhausted) must report the
+    SAME classified reason a real chat turn would hit -- not just "it has
+    a key" (which was the bug this feature replaces)."""
+    from agentops_workbench.api import server as server_mod
+    from agentops_workbench.llm.errors import LLMProviderError
+
+    monkeypatch.setenv("AGENTOPS_OPENAI_API_KEY", "sk-test-key")
+    import agentops_workbench.settings as settings_mod
+    settings_mod._settings = None
+
+    class _FailingAdapter:
+        last_usage = None
+
+        def chat(self, messages, **kwargs):
+            raise LLMProviderError("quota_exceeded", "openai", "no credits")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(server_mod, "make_adapter", lambda _s, **_kw: _FailingAdapter())
+    try:
+        r = client.post("/v1/wiki/providers/openai/check", headers=bearer)
+    finally:
+        settings_mod._settings = None
+    assert r.status_code == 200, r.text
+    assert r.json() == {"provider": "openai", "status": "quota_exceeded"}
+
+
+def test_check_provider_reports_ok_on_a_successful_call(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agentops_workbench.api import server as server_mod
+
+    monkeypatch.setenv("AGENTOPS_OPENAI_API_KEY", "sk-test-key")
+    import agentops_workbench.settings as settings_mod
+    settings_mod._settings = None
+
+    class _OkAdapter:
+        last_usage = None
+
+        def chat(self, messages, **kwargs):
+            class _Result:
+                content = "pong"
+            return _Result()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(server_mod, "make_adapter", lambda _s, **_kw: _OkAdapter())
+    try:
+        r = client.post("/v1/wiki/providers/openai/check", headers=bearer)
+    finally:
+        settings_mod._settings = None
+    assert r.status_code == 200, r.text
+    assert r.json() == {"provider": "openai", "status": "ok"}
+
+
+def test_check_provider_uses_a_max_tokens_budget_big_enough_for_reasoning_models(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: `max_tokens=1` made the check fail against gpt-5.6-luna
+    with 'Could not finish the message because max_tokens ... was reached'
+    -- a reasoning model spends hidden reasoning tokens before any visible
+    output, so a 1-token budget can never succeed. Caught via a real call,
+    not assumed; confirmed max_tokens=16 works."""
+    from agentops_workbench.api import server as server_mod
+
+    monkeypatch.setenv("AGENTOPS_OPENAI_API_KEY", "sk-test-key")
+    import agentops_workbench.settings as settings_mod
+    settings_mod._settings = None
+
+    captured: dict[str, object] = {}
+
+    class _CapturingAdapter:
+        last_usage = None
+
+        def chat(self, messages, **kwargs):
+            captured.update(kwargs)
+            class _Result:
+                content = "pong"
+            return _Result()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(server_mod, "make_adapter", lambda _s, **_kw: _CapturingAdapter())
+    try:
+        r = client.post("/v1/wiki/providers/openai/check", headers=bearer)
+    finally:
+        settings_mod._settings = None
+    assert r.status_code == 200, r.text
+    assert captured.get("max_tokens", 0) >= 16
+    assert r.json() == {"provider": "openai", "status": "ok"}
+
+
+def test_check_provider_never_leaks_the_key_value(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agentops_workbench.settings as settings_mod
+
+    monkeypatch.setenv("AGENTOPS_OPENAI_API_KEY", "sk-super-secret-marker")
+    settings_mod._settings = None
+    try:
+        r = client.post("/v1/wiki/providers/openai/check", headers=bearer)
+        assert "sk-super-secret-marker" not in r.text
+    finally:
+        settings_mod._settings = None
+
+
+def test_qa_accepts_a_provider_override_and_passes_it_to_make_adapter(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agentops_workbench.api import server as server_mod
+
+    corpus_id = _index_one_file(client, bearer)
+    captured: dict[str, object] = {}
+
+    class _StubAdapter:
+        last_usage = None
+
+        def chat(self, messages, **kwargs):
+            class _Result:
+                content = "Answer. [1]"
+            return _Result()
+
+        def close(self) -> None:
+            pass
+
+    def _stub_factory(_settings, *, provider=None):
+        captured["provider"] = provider
+        return _StubAdapter()
+
+    monkeypatch.setattr(server_mod, "make_adapter", _stub_factory)
+
+    r = client.post(
+        "/v1/wiki/qa",
+        json={"corpus_id": corpus_id, "query": "what does PostgresSaver do", "provider": "openai"},
+        headers=bearer,
+    )
+    assert r.status_code == 200, r.text
+    assert captured["provider"] == "openai"
+
+
+def test_qa_returns_a_clear_error_when_the_requested_providers_key_is_missing(
+    client: TestClient, bearer: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This worktree's own .env may configure a real (possibly broken) key --
+    # explicitly clear it so this test exercises "no key at all", not
+    # whatever happens to be configured locally, and never makes a real
+    # network call.
+    monkeypatch.setenv("AGENTOPS_OPENAI_API_KEY", "")
+    import agentops_workbench.settings as settings_mod
+    settings_mod._settings = None
+
+    corpus_id = _index_one_file(client, bearer)
+    try:
+        r = client.post(
+            "/v1/wiki/qa",
+            json={"corpus_id": corpus_id, "query": "what does PostgresSaver do", "provider": "openai"},
+            headers=bearer,
+        )
+    finally:
+        settings_mod._settings = None
+    assert r.status_code == 400, r.text
+    assert "openai" in r.json()["detail"].lower()
 
 
 # ---- Dev-mode auto-mint (Phase 9 UX) ----
@@ -519,7 +878,7 @@ def test_metrics_endpoint_reports_groundedness_aggregates_across_chat_calls(
                 usage=Usage(provider="stub", model="stub-v1", prompt_tokens=1, completion_tokens=1, total_tokens=2, cost_usd=0.0),
             )
 
-    monkeypatch.setattr(server_mod, "make_adapter", lambda _s: _Stub())
+    monkeypatch.setattr(server_mod, "make_adapter", lambda _s, **_kw: _Stub())
 
     r = client.post(
         "/v1/wiki/index-files",

@@ -1,0 +1,10 @@
+{
+  "id": "wq-008",
+  "family_id": "synonym",
+  "query": "throttling limit for API calls",
+  "relevant_refs": ["ops__rate-limits"],
+  "partially_relevant_refs": [],
+  "relevant_sections": ["ops__rate-limits"],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

@@ -1,0 +1,10 @@
+{
+  "id": "wq-002",
+  "family_id": "single_hop",
+  "query": "What HTTP status code indicates rate limiting?",
+  "relevant_refs": ["ops__rate-limits"],
+  "partially_relevant_refs": [],
+  "relevant_sections": ["ops__rate-limits"],
+  "reviewer": "sh-ai-x",
+  "split": "dev"
+}

@@ -36,6 +36,13 @@ dev = [
     "pytest-httpx>=0.34",
     "playwright>=1.47",
 ]
+# ADR-0010: WikiRagAdapter's dense/hybrid/hybrid_rerank retrieval modes.
+# Opt-in only -- pulls onnxruntime + tokenizers + huggingface-hub (CPU-only;
+# no torch). tfidf/bm25 never import this; see
+# tests/adapters/test_wiki_rag_lexical_frozen.py.
+dense = [
+    "fastembed>=0.7,<1.0",
+]
 
 [build-system]
 requires = ["hatchling"]

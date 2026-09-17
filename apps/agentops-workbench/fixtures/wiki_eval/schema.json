@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WikiEvalQuery",
+  "type": "object",
+  "required": [
+    "id", "family_id", "query", "relevant_refs",
+    "partially_relevant_refs", "relevant_sections", "reviewer", "split"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^wq-[0-9]{3}$" },
+    "family_id": {
+      "type": "string",
+      "enum": ["single_hop", "multi_hop", "paraphrase", "synonym", "acronym", "no_answer"]
+    },
+    "query": { "type": "string", "minLength": 3 },
+    "relevant_refs": { "type": "array", "items": { "type": "string" } },
+    "partially_relevant_refs": { "type": "array", "items": { "type": "string" } },
+    "relevant_sections": { "type": "array", "items": { "type": "string" } },
+    "expected_answer_contains": { "type": "array", "items": { "type": "string" } },
+    "reviewer": { "type": "string", "minLength": 1 },
+    "split": { "type": "string", "enum": ["dev", "val", "held_out"] }
+  },
+  "additionalProperties": false
+}

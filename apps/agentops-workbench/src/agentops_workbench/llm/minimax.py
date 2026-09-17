@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from .adapter import ChatResult, LLMAdapter, Usage
+from .errors import classify_llm_error
 from .pricing import cost_usd
 
 
@@ -33,13 +34,16 @@ class MinimaxAdapter(LLMAdapter):
         max_tokens: int = 1024,
         **kw: Any,
     ) -> ChatResult:
-        resp = self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,  # type: ignore[arg-type]
-            temperature=temperature,
-            max_tokens=max_tokens,
-            **kw,
-        )
+        try:
+            resp = self._client.chat.completions.create(
+                model=self.model,
+                messages=messages,  # type: ignore[arg-type]
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kw,
+            )
+        except Exception as exc:
+            raise classify_llm_error(exc, provider=self.provider) from exc
         content = (resp.choices[0].message.content or "").strip()
         u = resp.usage
         usage = Usage(
