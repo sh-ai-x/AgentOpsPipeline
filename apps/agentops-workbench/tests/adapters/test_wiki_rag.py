@@ -304,3 +304,86 @@ def test_collect_wiki_files_returns_empty_for_empty_or_missing_wiki_dir(tmp_path
     empty = tmp_path / "empty-wiki"
     empty.mkdir()
     assert collect_wiki_files(empty) == {}
+
+
+# ---- BM25 retrieval mode ----
+
+
+def test_bm25_search_ranks_the_document_that_actually_discusses_the_query_first(
+    tmp_path: Path,
+) -> None:
+    wiki_dir = _make_wiki(tmp_path)
+    adapter = WikiRagAdapter(wiki_dir=str(wiki_dir), retrieval="bm25")
+
+    results = adapter.search_evidence("checkpointing persistence", top_k=5)
+
+    assert len(results) >= 1
+    assert results[0].ref_id == "checkpointing"
+    assert results[0].source_kind == "wiki"
+    assert results[0].score > 0.0
+    assert all(r.ref_id != "onboarding" for r in results)
+
+
+def test_bm25_downweights_a_term_that_appears_in_every_document(tmp_path: Path) -> None:
+    """Same corpus/assertion shape as the TF-IDF IDF test above -- BM25's
+    IDF factor must also punish a term common to the whole corpus."""
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    (wiki_dir / "a.md").write_text("checkpointing checkpointing checkpointing", encoding="utf-8")
+    (wiki_dir / "b.md").write_text("checkpointing checkpointing checkpointing", encoding="utf-8")
+    (wiki_dir / "c.md").write_text("checkpointing postgres postgres postgres", encoding="utf-8")
+    adapter = WikiRagAdapter(wiki_dir=str(wiki_dir), retrieval="bm25")
+
+    results = adapter.search_evidence("postgres", top_k=5)
+    assert results[0].ref_id == "c"
+
+
+def test_bm25_score_matches_okapi_formula_on_single_doc_single_term(tmp_path: Path) -> None:
+    """Pin the exact BM25 variant (k1=1.5, b=0.75, +1-smoothed IDF) so a
+    future refactor can't silently drift to a different formula."""
+    import math
+
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    (wiki_dir / "only.md").write_text("postgres postgres postgres", encoding="utf-8")
+    adapter = WikiRagAdapter(wiki_dir=str(wiki_dir), retrieval="bm25")
+
+    results = adapter.search_evidence("postgres", top_k=1)
+
+    k1, b = 1.5, 0.75
+    idf = math.log((1 - 1 + 0.5) / (1 + 0.5) + 1.0)  # N=1, df=1
+    tf = 3
+    doc_len = 3
+    avgdl = 3
+    expected = idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (doc_len / avgdl)))
+    assert results[0].score == pytest.approx(expected, rel=1e-9)
+
+
+def test_bm25_saturates_term_frequency_unlike_raw_linear_growth(tmp_path: Path) -> None:
+    """The hallmark of BM25 over a raw term-count score: repeating the
+    matched term 10x must not come anywhere near a 10x score increase."""
+    wiki_dir = tmp_path / "wiki"
+    wiki_dir.mkdir()
+    (wiki_dir / "few.md").write_text(" ".join(["postgres"] * 3), encoding="utf-8")
+    (wiki_dir / "many.md").write_text(" ".join(["postgres"] * 30), encoding="utf-8")
+    adapter = WikiRagAdapter(wiki_dir=str(wiki_dir), retrieval="bm25")
+
+    results = {r.ref_id: r.score for r in adapter.search_evidence("postgres", top_k=5)}
+    assert results["many"] < results["few"] * 3
+
+
+def test_invalid_retrieval_mode_raises_value_error(tmp_path: Path) -> None:
+    wiki_dir = _make_wiki(tmp_path)
+    with pytest.raises(ValueError):
+        WikiRagAdapter(wiki_dir=str(wiki_dir), retrieval="not-a-real-mode")
+
+
+def test_default_retrieval_mode_is_unchanged_tfidf(tmp_path: Path) -> None:
+    wiki_dir = _make_wiki(tmp_path)
+    default_adapter = WikiRagAdapter(wiki_dir=str(wiki_dir))
+    explicit_adapter = WikiRagAdapter(wiki_dir=str(wiki_dir), retrieval="tfidf")
+
+    query = "checkpointing persistence"
+    default_scores = [r.score for r in default_adapter.search_evidence(query, top_k=5)]
+    explicit_scores = [r.score for r in explicit_adapter.search_evidence(query, top_k=5)]
+    assert default_scores == explicit_scores

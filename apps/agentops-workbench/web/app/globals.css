@@ -80,6 +80,7 @@ h3 {
 }
 
 input,
+select,
 button {
   font: inherit;
   border-radius: 8px;

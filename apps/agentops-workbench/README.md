@@ -154,7 +154,7 @@ web/ chat turn  --- POST /v1/wiki/qa ----------->  graph/wiki_chat.py
 ```
 
 - **LangGraph** (`langgraph==1.2.11`): `graph/wiki_chat.py` is a checkpointed retrieve → answer graph. A `MemorySaver` checkpointer keyed by `thread_id` holds the transcript server-side, so the client sends only `{corpus_id, query, thread_id}` on a follow-up turn, never the growing history. Non-serializable runtime objects (the live `LLMAdapter`, the `Tracer`) travel in `config["configurable"]`, not in state.
-- **Retrieval**: `wiki_corpus.py` owns a process-local, LRU-capped registry of corpora. Each one is a `WikiRagAdapter` (`adapters/wiki_rag.py`, TF-IDF + cosine) built over a temp dir of the uploaded notes; hits carry provenance fields (`source_path`, `evidence_span` with character offsets, `coverage`, `contributing_terms`, `mtime`). Nothing is persisted to server disk beyond the corpus lifetime.
+- **Retrieval**: `wiki_corpus.py` owns a process-local, LRU-capped registry of corpora. Each one is a `WikiRagAdapter` (`adapters/wiki_rag.py`) built over a temp dir of the uploaded notes, with a selectable lexical scorer — `retrieval="tfidf"` (default, cosine similarity over TF-IDF vectors) or `retrieval="bm25"` (Okapi BM25, k1=1.5/b=0.75, term-frequency saturation + document-length normalization); pass `retrieval` on `POST /v1/wiki/index-files` per corpus, or set `AGENTOPS_WIKI_DEFAULT_RETRIEVAL=bm25` to change the fallback. See [Retrieval algorithm](#retrieval-algorithm) below. Hits carry provenance fields (`source_path`, `evidence_span` with character offsets, `coverage`, `contributing_terms`, `mtime`). Nothing is persisted to server disk beyond the corpus lifetime.
 - **Groundedness**: `groundedness.py` computes the four per-turn metrics; `wiki_metrics.py` keeps the trailing 200-call windows the dashboard reads.
 - **FastAPI**: `POST /v1/wiki/index-files`, `GET /v1/wiki/search`, `POST /v1/wiki/qa`, `GET /v1/wiki/metrics`, plus `GET /v1/auth/dev-token` and `GET /v1/auth/dev-mode` for the local auto-mint path (HS256 JWT, `AGENTOPS_JWT_SECRET` in `.env`).
 - **SQLAlchemy + SQLite** (Postgres in prod): `db/models.py` — the run ledger tables behind the API's persistence layer and `/_debug/metrics`.
@@ -168,7 +168,7 @@ src/agentops_workbench/
                              # /_debug/metrics
   wiki_corpus.py             # per-corpus_id registry (LRU) + provenance-aware
                              # search over the picked directory
-  adapters/wiki_rag.py       # WikiRagAdapter -- TF-IDF + cosine retrieval
+  adapters/wiki_rag.py       # WikiRagAdapter -- TF-IDF+cosine or BM25 (selectable)
   graph/wiki_chat.py         # checkpointed multi-turn chat graph (MemorySaver,
                              # keyed by thread_id) + numbered citations
   graph/{fixed,single_agent,planner_executor,topology,state}.py
@@ -269,13 +269,38 @@ link. If the picked dir isn't an Obsidian vault, references fall
 back to `file:///<path>` so the link still works in the OS file
 explorer.
 
+### Retrieval algorithm
+
+`WikiRagAdapter` (`adapters/wiki_rag.py`) supports two selectable
+lexical scorers, both pure Python (no numpy/scikit-learn/embedding
+model — see that file's module docstring for the full tradeoff):
+
+| Mode | Scoring | Good for |
+|---|---|---|
+| `tfidf` (default) | Cosine similarity over TF-IDF vectors | General notes of fairly uniform length |
+| `bm25` | Okapi BM25 (k1=1.5, b=0.75) | Vaults with a mix of short and long notes — BM25's document-length normalization and term-frequency saturation (a term repeated 10x doesn't score ~10x higher) usually rank long notes more fairly |
+
+Select it in the web UI with the **Retrieval** dropdown next to
+**Pick directory** (step 1) — it applies to the next directory you
+pick, not retroactively to an already-indexed corpus. Programmatically,
+send `"retrieval": "bm25"` in the `POST /v1/wiki/index-files` body
+(`retrieval: "tfidf" | "bm25"`, optional — invalid values get a
+`422`), or set the process-wide default with
+`AGENTOPS_WIKI_DEFAULT_RETRIEVAL=bm25`.
+
+Real vector-embedding (dense) search was considered and deliberately
+deferred: it needs either a local embedding model (breaks the
+dependency-light design) or a per-query call to a provider's
+embeddings endpoint (network + cost on every search).
+
 ### Latency dashboard
 
 Per-stage p50/p95 of `/v1/wiki/search` and `/v1/wiki/qa` over a
 trailing 200-call window: `tokenize / score / sort+return / total`
-in ms. If a stage's p95 dominates total p95, look there first —
-on the current code base, `score` (the TF-IDF + cosine-similarity scan
-over the corpus, `WikiRagAdapter._cosine_score`) is usually the slow tail.
+in ms. If a stage's p95 dominates total p95, look there first — the
+`score` stage (the corpus scan in `WikiRagAdapter._score`, dispatching
+to `_cosine_score` or `_bm25_score` per the corpus's retrieval mode)
+is usually the slow tail on the current code base.
 
 ## References
 

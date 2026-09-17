@@ -81,6 +81,40 @@ def test_index_files_creates_corpus_with_provided_files(
     assert isinstance(body["corpus_id"], str) and len(body["corpus_id"]) >= 16
 
 
+def test_index_files_accepts_bm25_retrieval_and_search_returns_hits(
+    client: TestClient, bearer: dict
+) -> None:
+    payload = {
+        "files": [
+            {
+                "path": "notes/install.md",
+                "content": "Install LangGraph with PostgreSQL checkpointing.",
+                "mtime": 0,
+            },
+        ],
+        "retrieval": "bm25",
+    }
+    r = client.post("/v1/wiki/index-files", json=payload, headers=bearer)
+    assert r.status_code == 200, r.text
+    corpus_id = r.json()["corpus_id"]
+
+    r = client.get(
+        "/v1/wiki/search",
+        params={"corpus_id": corpus_id, "q": "postgresql checkpointing", "top_k": 5},
+        headers=bearer,
+    )
+    assert r.status_code == 200, r.text
+    hits = r.json()["results"]
+    assert hits
+    assert hits[0]["score"] > 0.0
+
+
+def test_index_files_rejects_unknown_retrieval_mode(client: TestClient, bearer: dict) -> None:
+    payload = {"files": [], "retrieval": "not-a-real-mode"}
+    r = client.post("/v1/wiki/index-files", json=payload, headers=bearer)
+    assert r.status_code == 422
+
+
 def test_index_files_rejects_unsafe_paths(client: TestClient, bearer: dict) -> None:
     payload = {
         "files": [
