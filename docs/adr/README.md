@@ -23,7 +23,7 @@
 | 0008 | GitHub-URL CLI flow scope + deployment target (Fly.io) | Accepted | [`../../apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md`](../../apps/agentops-workbench/docs/adr/0008-github-url-cli-and-deployment-target.md) |
 | 0009 | oss-helper reduced to docs-only flow (GitHub issues/PRs source dropped) | Accepted | [`0009-oss-helper-docs-only-scope.md`](0009-oss-helper-docs-only-scope.md) — **misfiled**: lives at the project root, not under the canonical `apps/agentops-workbench/docs/adr/` owner directory; not yet moved |
 | 0010 | Dense retrieval, hybrid fusion and CPU reranking for WikiRagAdapter — without pgvector | Accepted | [`../../apps/agentops-workbench/docs/adr/0010-dense-retrieval-and-reranking.md`](../../apps/agentops-workbench/docs/adr/0010-dense-retrieval-and-reranking.md) |
-| 0011 | Real OpenTelemetry export for the wiki-chat path | Proposed | [`../../apps/agentops-workbench/docs/adr/0011-real-otel-export.md`](../../apps/agentops-workbench/docs/adr/0011-real-otel-export.md) |
+| 0011 | Real OpenTelemetry export for the wiki-chat path | Accepted | [`../../apps/agentops-workbench/docs/adr/0011-real-otel-export.md`](../../apps/agentops-workbench/docs/adr/0011-real-otel-export.md) |
 
 ## The ADR-0005 gap
 

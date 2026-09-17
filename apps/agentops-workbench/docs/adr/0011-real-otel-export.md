@@ -2,8 +2,13 @@
 
 ## Status
 
-Proposed (2026-09-17); revised same day to minimize footprint before
-implementation begins (§Decision 1–2 below). Discharges the unmet Phase 5 exit
+Accepted (2026-09-17). Revised same day to minimize footprint, then
+implemented same day: both rollout slices below landed together --
+`REDACT_PATTERNS` (§Decision 4), the `otel`/`otlp` extras and settings
+(§Decision 1–2), the SDK-backed `Tracer` plus `RedactingSpanExporter` /
+`JsonlFileSpanExporter` (§Decision 3–4), content gating (§Decision 5), and
+the API-layer wiring with its regression lock at
+`tests/api/test_wiki_qa_tracing.py` (§Decision 6). Discharges the unmet Phase 5 exit
 criterion recorded in
 [`phases/05-delivery/index.md`](../../../../phases/05-delivery/index.md) §Exit
 ("traces do not expose synthetic secrets") and the proposal's Tech Stack

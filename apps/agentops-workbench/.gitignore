@@ -1,1 +1,5 @@
 *.db
+# ADR-0011: JSONL trace files written by JsonlFileSpanExporter when
+# AGENTOPS_TRACE_EXPORTER=jsonl. Added regardless of the default
+# (trace_exporter=none), since the exporter can still be turned on.
+runs/

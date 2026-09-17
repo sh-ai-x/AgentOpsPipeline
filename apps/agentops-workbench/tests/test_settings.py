@@ -38,3 +38,27 @@ def test_valid_reasoning_effort_values_are_accepted() -> None:
 def test_unknown_reasoning_effort_fails_at_settings_construction() -> None:
     with pytest.raises(ValidationError, match="AGENTOPS_REASONING_EFFORT"):
         Settings(reasoning_effort="ultra-mega", jwt_secret="x" * 32)
+
+
+# ---- trace_exporter (ADR-0011) ----
+
+
+def test_trace_exporter_defaults_to_none() -> None:
+    s = Settings(jwt_secret="x" * 32)
+    assert s.trace_exporter == "none"
+
+
+def test_valid_trace_exporters_are_accepted() -> None:
+    for exporter in ("none", "jsonl", "otlp"):
+        s = Settings(trace_exporter=exporter, jwt_secret="x" * 32)
+        assert s.trace_exporter == exporter
+
+
+def test_unknown_trace_exporter_fails_at_settings_construction() -> None:
+    with pytest.raises(ValidationError, match="AGENTOPS_TRACE_EXPORTER"):
+        Settings(trace_exporter="console", jwt_secret="x" * 32)
+
+
+def test_trace_content_defaults_to_false() -> None:
+    s = Settings(jwt_secret="x" * 32)
+    assert s.trace_content is False
