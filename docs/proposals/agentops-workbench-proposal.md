@@ -847,15 +847,18 @@ flowchart TD
     R --> P[Route or bounded plan]
     P --> G[Authorization and MCP client]
     G --> ES{{EvidenceSourceAdapter interface}}
-    ES --> A1[WikiRagAdapter: embeddings + ANN]
+    ES --> A1[WikiRagAdapter: in-process, direct -- correct as designed, ADR-0007]
     ES --> A2[GitHubIssueAdapter: GitHub API, own rate limits]
     ES --> A3[SecurityLogAdapter: time-windowed query]
     ES --> A4[IncidentLogAdapter: timeouts, 429s, provider errors]
     ES --> A0[DocsCorpusAdapter: lexical, as built]
-    A0 --> D[Document MCP server]
-    A0 --> X[Pinned filesystem MCP server]
+    A0 -.not wired -- build_document_client returns in-process.-> D[Document MCP server: orphaned]
+    A0 -.deferred, ADR-0011 Non-goals.-> X[Pinned filesystem MCP server: not integrated]
     G --> T[Mock ticket service and action ledger]
     W --> E[Redacted traces and outcome records]
+    E --> XP[RedactingSpanExporter: redact at export boundary]
+    XP --> RJ[JsonlFileSpanExporter: runs_dir/trace_id.jsonl -- default]
+    XP --> COL[(OTLP/HTTP to local collector -- opt-in, extra 'otlp')]
     E --> V[Evaluation and experiment reports]
     E --> O[Groundedness / cost / latency drift per source_kind]
     B[Benchmark curation and review] --> DS[Versioned dataset per source]
@@ -867,6 +870,27 @@ flowchart TD
 Read the two diagrams together: `A0` is everything the first diagram had;
 `A1`–`A4` are siblings behind the same interface, and `O` is Pillar 2's new
 layer over the already-shipped `Usage` / `ToolCall` records.
+
+**`ES --> A1` is a direct edge on purpose.** `WikiRagAdapter` is an in-process
+Python object and was never intended to sit behind MCP. MCP was scoped to `A0`
+alone. Beyond intent, the MCP `DocumentClient` protocol
+(`mcp/__init__.py:26-31`) exposes only `{doc_id, title, score}` and carries
+none of the AC3 provenance the citation path depends on, so routing the wiki
+adapter through it would break `/v1/wiki/qa`'s References block. This edge is
+not a gap and is not scheduled to change.
+
+**`A0 -.-> D` and `A0 -.-> X` are dashed because they do not exist in running
+code.** `build_document_client` (`mcp/__init__.py:93-99`) returns
+`InMemoryDocumentClient` or `WikiRagAdapter` and never
+`SubprocessDocumentClient`, which is reached only by its own test. Phase 2's
+target is unmet; [ADR-0011](../../apps/agentops-workbench/docs/adr/0011-real-otel-export.md)
+§Non-goals records the deferral and its trigger.
+
+**`E --> XP --> {RJ, COL}` is what Phase 5 actually promised.** Until
+ADR-0011, `E` terminated in an in-process list -- no exporter, no backend, and
+in fact no spans at all, because the live handler never passed a tracer. `XP`
+is the single redaction chokepoint; `RJ` is the offline default; `COL` is the
+opt-in real-backend path.
 
 ## Auth and Identity
 
