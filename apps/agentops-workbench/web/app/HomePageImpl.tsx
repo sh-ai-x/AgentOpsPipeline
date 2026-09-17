@@ -285,6 +285,11 @@ export default function HomePageImpl() {
   // Resets on every new directory pick.
   const [isObsidianVault, setIsObsidianVault] = useState(false);
   const [topK, setTopK] = useState(5);
+  // Retrieval algorithm for the NEXT directory pick -- see README's
+  // "Retrieval algorithm" section. Applies at index time; switching
+  // this after a directory is already picked has no effect until the
+  // next pick (re-indexing doesn't happen automatically).
+  const [retrieval, setRetrieval] = useState<"tfidf" | "bm25">("tfidf");
   // Chat state -- multi-turn transcript.
   // `messages` holds the full conversation so the operator can scroll
   // back through prior turns; `chatInput` is the unsent draft. `threadId`
@@ -375,7 +380,8 @@ export default function HomePageImpl() {
       const uploadBody: {
         files: typeof files;
         vault_name?: string;
-      } = { files };
+        retrieval: "tfidf" | "bm25";
+      } = { files, retrieval };
       if (hasObsidian) {
         uploadBody.vault_name = root.name ?? "vault";
       }
@@ -493,9 +499,23 @@ export default function HomePageImpl() {
 
       <section className="card">
         <h2>1. Pick your wiki directory</h2>
-        <button onClick={onPickDirectory} disabled={busy || !bearer} className="primary">
-          {busy ? "..." : "Pick directory"}
-        </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button onClick={onPickDirectory} disabled={busy || !bearer} className="primary">
+            {busy ? "..." : "Pick directory"}
+          </button>
+          <label className="muted" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            Retrieval:
+            <select
+              value={retrieval}
+              onChange={(e) => setRetrieval(e.target.value as "tfidf" | "bm25")}
+              disabled={busy}
+              title="Applies when you pick a directory -- see README's Retrieval algorithm section"
+            >
+              <option value="tfidf">TF-IDF (cosine)</option>
+              <option value="bm25">BM25</option>
+            </select>
+          </label>
+        </div>
         {corpusId && (
           <p className="status">
             ✓ indexed <strong>{docCount}</strong> file

@@ -280,12 +280,13 @@ model — see that file's module docstring for the full tradeoff):
 | `tfidf` (default) | Cosine similarity over TF-IDF vectors | General notes of fairly uniform length |
 | `bm25` | Okapi BM25 (k1=1.5, b=0.75) | Vaults with a mix of short and long notes — BM25's document-length normalization and term-frequency saturation (a term repeated 10x doesn't score ~10x higher) usually rank long notes more fairly |
 
-Select per corpus by sending `"retrieval": "bm25"` in the
-`POST /v1/wiki/index-files` body (`retrieval: "tfidf" | "bm25"`,
-optional — invalid values get a `422`), or set the process-wide
-default with `AGENTOPS_WIKI_DEFAULT_RETRIEVAL=bm25`. The web UI does
-not yet expose a picker for this — it always indexes with the
-server's default until that's wired up.
+Select it in the web UI with the **Retrieval** dropdown next to
+**Pick directory** (step 1) — it applies to the next directory you
+pick, not retroactively to an already-indexed corpus. Programmatically,
+send `"retrieval": "bm25"` in the `POST /v1/wiki/index-files` body
+(`retrieval: "tfidf" | "bm25"`, optional — invalid values get a
+`422`), or set the process-wide default with
+`AGENTOPS_WIKI_DEFAULT_RETRIEVAL=bm25`.
 
 Real vector-embedding (dense) search was considered and deliberately
 deferred: it needs either a local embedding model (breaks the
