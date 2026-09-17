@@ -45,6 +45,7 @@ from .. import groundedness, wiki_corpus
 from ..llm.adapter import LLMAdapter
 from ..llm.errors import LLMProviderError
 from ..observability.otel import Tracer
+from ..settings import get_settings
 
 _QA_PROMPT = (
     "You are an OSS-maintainer assistant. Answer the question using "
@@ -141,11 +142,29 @@ class _WikiChatState(TypedDict, total=False):
     faithfulness: float
 
 
+def _query_attributes(query: str) -> dict[str, Any]:
+    """ADR-0011 §Decision 5: raw query text is gated behind
+    `AGENTOPS_TRACE_CONTENT`. Off by default -- turning on tracing must
+    not, by itself, start shipping private wiki text off-box."""
+    if get_settings().trace_content:
+        return {"query": query}
+    import hashlib
+
+    return {
+        "query_len": len(query),
+        "query_sha256_prefix": hashlib.sha256(query.encode("utf-8")).hexdigest()[:12],
+    }
+
+
 def _retrieve_node(state: _WikiChatState, config: RunnableConfig) -> dict[str, Any]:
     tracer: Tracer | None = config.get("configurable", {}).get("tracer")
     span = tracer.start(
         "wiki.search",
-        attributes={"corpus_id": state["corpus_id"], "query": state["query"], "top_k": state["top_k"]},
+        attributes={
+            "corpus_id": state["corpus_id"],
+            "top_k": state["top_k"],
+            **_query_attributes(state["query"]),
+        },
     ) if tracer else None
     try:
         hits, timing_ms = wiki_corpus.search_with_timing(

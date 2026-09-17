@@ -13,6 +13,7 @@ REQUIRED_ADRS = [
     "0003-provider-abstraction.md",
     "0004-dataset-separation.md",
     "0010-dense-retrieval-and-reranking.md",
+    "0011-real-otel-export.md",
 ]
 
 

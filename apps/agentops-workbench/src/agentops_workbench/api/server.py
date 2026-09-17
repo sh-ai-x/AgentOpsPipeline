@@ -42,6 +42,7 @@ from ..graph.wiki_chat import run_wiki_chat
 from ..llm.errors import LLMProviderError
 from ..llm.factory import make_adapter
 from ..mocks.tickets import TicketLedger
+from ..observability.otel import RedactingSpanExporter, Tracer
 from ..settings import get_settings
 from ..wiki_metrics import (
     GroundednessRecorder,
@@ -52,10 +53,54 @@ from ..wiki_metrics import (
 
 log = logging.getLogger(__name__)
 
+# ADR-0011: process-wide TracerProvider, built in `_lifespan` when
+# `trace_exporter != "none"` and torn down on shutdown (`force_flush` +
+# `shutdown` -- the only hook FastAPI offers, and `BatchSpanProcessor`
+# drops its queue without it). `None` when tracing is off (the default)
+# or the `otel` extra isn't relevant -- request handlers check for this
+# before minting a `Tracer(otel_tracer=...)`.
+_TRACER_PROVIDER: Any = None
+
+
+def _build_span_exporter(settings: Any) -> Any:
+    """Resolve `AGENTOPS_TRACE_EXPORTER` to a concrete SpanExporter.
+    Raises RuntimeError with the exact `uv sync` remediation when the
+    selected exporter's extra isn't installed -- mirrors the insecure-JWT
+    refusal above."""
+    from ..observability.otel import JsonlFileSpanExporter
+
+    if settings.trace_exporter == "jsonl":
+        return JsonlFileSpanExporter(settings.runs_dir)
+    if settings.trace_exporter == "otlp":
+        try:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "AGENTOPS_TRACE_EXPORTER=otlp requires the otlp extra: "
+                "uv sync --extra otel --extra otlp"
+            ) from exc
+        return OTLPSpanExporter(endpoint=settings.otlp_endpoint)
+    raise ValueError(f"unreachable: unknown trace_exporter {settings.trace_exporter!r}")
+
+
+def _mint_tracer(trace_id: str) -> Tracer:
+    """Build a `Tracer` for one request. Real SDK-backed when tracing is
+    enabled (`_TRACER_PROVIDER` set); otherwise the same no-op bookkeeping
+    recorder this class has always been -- constructing one is always
+    cheap and side-effect-free, so callers don't need to branch on
+    whether tracing is on before minting one."""
+    otel_tracer = _TRACER_PROVIDER.get_tracer("agentops_workbench") if _TRACER_PROVIDER else None
+    return Tracer(trace_id=trace_id, otel_tracer=otel_tracer)
+
 
 @asynccontextmanager
-async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Refuse to serve with a forgeable JWT secret outside the fake provider."""
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Refuse to serve with a forgeable JWT secret outside the fake provider.
+    Also builds the process-wide TracerProvider (ADR-0011) when tracing is
+    enabled, and flushes/shuts it down on exit."""
+    global _TRACER_PROVIDER
     settings = get_settings()
     if settings.has_insecure_jwt_secret() and settings.provider != "local-fake":
         raise RuntimeError(
@@ -63,7 +108,35 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
             f"provider={settings.provider!r}. Set a strong secret before starting the "
             "API: python -c 'import secrets; print(secrets.token_urlsafe(48))'"
         )
+
+    _TRACER_PROVIDER = None
+    if settings.trace_exporter != "none":
+        try:
+            from opentelemetry.sdk.resources import Resource
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        except ImportError as exc:
+            raise RuntimeError(
+                f"AGENTOPS_TRACE_EXPORTER={settings.trace_exporter!r} requires the otel "
+                "extra: uv sync --extra otel"
+            ) from exc
+        exporter = _build_span_exporter(settings)
+        resource = Resource.create(
+            {
+                "service.name": "agentops-workbench",
+                "service.version": app.version,
+                "agentops.code_sha": os.environ.get("AGENTOPS_CODE_SHA", ""),
+            }
+        )
+        provider = TracerProvider(resource=resource)
+        provider.add_span_processor(BatchSpanProcessor(RedactingSpanExporter(exporter)))
+        _TRACER_PROVIDER = provider
+
     yield
+
+    if _TRACER_PROVIDER is not None:
+        _TRACER_PROVIDER.force_flush()
+        _TRACER_PROVIDER.shutdown()
 
 
 app = FastAPI(title="AgentOps Workbench API", version="0.2.0", lifespan=_lifespan)
@@ -897,22 +970,33 @@ def index_files(
     or malicious.
     """
     import time as _time
+    import uuid as _uuid
 
     started = _time.monotonic()
     files_payload = [
         {"path": f.path, "content": f.content, "mtime": f.mtime}
         for f in body.files
     ]
+    # ADR-0010 §Consequences: index time can run 10-30s for dense modes and
+    # "must be surfaced". The span is the observability half of that
+    # obligation -- counts only (file_count, doc_count), never raw paths.
+    tracer = _mint_tracer(_uuid.uuid4().hex)
+    span = tracer.start(
+        "wiki.index",
+        attributes={"file_count": len(files_payload), "retrieval": body.retrieval},
+    )
     try:
         corpus_id, _work_dir, doc_count = wiki_corpus.index_uploaded_files(
             files_payload, vault_name=body.vault_name, retrieval=body.retrieval
         )
     except ValueError as exc:
+        tracer.end(span, status="error")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     duration_ms = int((_time.monotonic() - started) * 1000)
     resolved_retrieval = wiki_corpus.get_registry().get(corpus_id).adapter._retrieval
+    tracer.end(span, extra={"doc_count": doc_count, "duration_ms": duration_ms})
     log.info(
         "wiki index: principal=%s corpus_id=%s doc_count=%d files=%d duration_ms=%d "
         "retrieval=%s",
@@ -1112,88 +1196,114 @@ def wiki_qa(
     server-side, keyed by `thread_id` in `config.configurable`.
     """
     thread_id = body.thread_id or uuid.uuid4().hex
-    settings = get_settings()
+    # ADR-0011 §Decision 6: one trace per turn, not per conversation --
+    # `thread_id` persists across turns and would otherwise produce an
+    # unbounded trace. A fresh trace_id is minted per call; thread_id
+    # rides as a span attribute so turns stay correlatable.
+    tracer = _mint_tracer(uuid.uuid4().hex)
+    root_span = tracer.start(
+        "wiki.qa", attributes={"thread_id": thread_id, "corpus_id": body.corpus_id}
+    )
+    error_kind: str | None = None
     try:
-        adapter = make_adapter(settings, provider=body.provider)
-    except ValueError as exc:
-        # Missing API key for the requested provider (make_adapter raises
-        # before any network call) -- a config problem the caller CAN fix
-        # (pick a different provider, or an operator sets the key), unlike
-        # the LLMProviderError cases below which are the provider's own
-        # call failing after a key was already present.
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    # Capture per-stage search timing for the metrics dashboard.
-    # The chat graph's internal `_retrieve_node` already times this
-    # call, but doesn't surface the numbers to the API layer; the
-    # cleanest thing for the operator's p50/p95 view is to re-time the
-    # public call once more here, on the API thread. The cost is one
-    # extra search per turn -- negligible vs the LLM latency.
-    #
-    # Skip the timing re-run entirely on the UnknownCorpusError path:
-    # there's no benefit to recording a 404 search latency.
-    search_timing_ms: dict[str, float] = {}
-    try:
-        _, search_timing_ms = wiki_corpus.search_with_timing(
-            body.corpus_id, body.query, top_k=body.top_k
-        )
-    except wiki_corpus.UnknownCorpusError:
-        # Re-raise below; just don't record latency on the error path.
-        pass
-    if search_timing_ms:
-        search_metrics.record(
-            StageSample(
-                tokenize_ms=search_timing_ms.get("tokenize_ms", 0.0),
-                score_ms=search_timing_ms.get("score_ms", 0.0),
-                sort_and_return_ms=search_timing_ms.get("sort_and_return_ms", 0.0),
-                total_ms=search_timing_ms.get("total_ms", 0.0),
+        settings = get_settings()
+        try:
+            adapter = make_adapter(settings, provider=body.provider)
+        except ValueError as exc:
+            # Missing API key for the requested provider (make_adapter raises
+            # before any network call) -- a config problem the caller CAN fix
+            # (pick a different provider, or an operator sets the key), unlike
+            # the LLMProviderError cases below which are the provider's own
+            # call failing after a key was already present.
+            error_kind = "bad_request"
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        # Capture per-stage search timing for the metrics dashboard.
+        # The chat graph's internal `_retrieve_node` already times this
+        # call, but doesn't surface the numbers to the API layer; the
+        # cleanest thing for the operator's p50/p95 view is to re-time the
+        # public call once more here, on the API thread. The cost is one
+        # extra search per turn -- negligible vs the LLM latency. Traced
+        # as `wiki.qa.search_resample` so that cost is visible in every
+        # trace, which is the precondition for deciding whether to remove
+        # it (ADR-0011 §Consequences).
+        #
+        # Skip the timing re-run entirely on the UnknownCorpusError path:
+        # there's no benefit to recording a 404 search latency.
+        search_timing_ms: dict[str, float] = {}
+        resample_span = tracer.start("wiki.qa.search_resample")
+        try:
+            _, search_timing_ms = wiki_corpus.search_with_timing(
+                body.corpus_id, body.query, top_k=body.top_k
+            )
+        except wiki_corpus.UnknownCorpusError:
+            # Re-raise below (from run_wiki_chat); just don't record
+            # latency on the error path.
+            tracer.end(resample_span, status="error")
+        else:
+            tracer.end(resample_span)
+        if search_timing_ms:
+            search_metrics.record(
+                StageSample(
+                    tokenize_ms=search_timing_ms.get("tokenize_ms", 0.0),
+                    score_ms=search_timing_ms.get("score_ms", 0.0),
+                    sort_and_return_ms=search_timing_ms.get("sort_and_return_ms", 0.0),
+                    total_ms=search_timing_ms.get("total_ms", 0.0),
+                )
+            )
+        try:
+            turn = run_wiki_chat(
+                adapter, body.corpus_id, body.query, thread_id, top_k=body.top_k, tracer=tracer
+            )
+        except wiki_corpus.UnknownCorpusError as exc:
+            error_kind = "unknown_corpus"
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"corpus_id not found: {exc.corpus_id}",
+            ) from exc
+        except LLMProviderError as exc:
+            error_kind = exc.kind
+            log.warning(
+                "wiki qa: LLM provider error principal=%s corpus_id=%s provider=%s kind=%s",
+                principal_id, body.corpus_id, exc.provider, exc.kind,
+            )
+            raise _llm_provider_http_exception(exc) from exc
+        finally:
+            adapter.close()
+
+        # Record one groundedness sample per call -- the dashboard's
+        # "Accuracy / hallucination" panel aggregates these over the
+        # trailing 200-call window so a reviewer can see whether the
+        # model is drifting, not just what one turn did.
+        groundedness_metrics.record(
+            GroundednessSample(
+                rouge_l_f1=turn.overall_rouge_l_f1,
+                citation_recall=turn.citation_recall,
+                citation_precision=turn.citation_precision,
+                faithfulness=turn.faithfulness,
             )
         )
-    try:
-        turn = run_wiki_chat(
-            adapter, body.corpus_id, body.query, thread_id, top_k=body.top_k
+        log.info(
+            "wiki qa: principal=%s corpus_id=%s thread_id=%s hits=%d sentences=%d "
+            "rouge_l=%.3f cite_recall=%.3f cite_prec=%.3f faithful=%.3f",
+            principal_id, body.corpus_id, thread_id, len(turn.hits), len(turn.sentences),
+            turn.overall_rouge_l_f1, turn.citation_recall, turn.citation_precision,
+            turn.faithfulness,
         )
-    except wiki_corpus.UnknownCorpusError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"corpus_id not found: {exc.corpus_id}",
-        ) from exc
-    except LLMProviderError as exc:
-        log.warning(
-            "wiki qa: LLM provider error principal=%s corpus_id=%s provider=%s kind=%s",
-            principal_id, body.corpus_id, exc.provider, exc.kind,
-        )
-        raise _llm_provider_http_exception(exc) from exc
-    finally:
-        adapter.close()
-
-    # Record one groundedness sample per call -- the dashboard's
-    # "Accuracy / hallucination" panel aggregates these over the
-    # trailing 200-call window so a reviewer can see whether the
-    # model is drifting, not just what one turn did.
-    groundedness_metrics.record(
-        GroundednessSample(
-            rouge_l_f1=turn.overall_rouge_l_f1,
+        return QaResponse(
+            query=body.query,
+            corpus_id=body.corpus_id,
+            thread_id=thread_id,
+            answer=turn.answer,
+            overall_rouge_l_f1=turn.overall_rouge_l_f1,
             citation_recall=turn.citation_recall,
             citation_precision=turn.citation_precision,
             faithfulness=turn.faithfulness,
+            sentences=[SentenceScore(**s) for s in turn.sentences],
+            hits=[WikiHit(**h) for h in turn.hits],
         )
-    )
-    log.info(
-        "wiki qa: principal=%s corpus_id=%s thread_id=%s hits=%d sentences=%d "
-        "rouge_l=%.3f cite_recall=%.3f cite_prec=%.3f faithful=%.3f",
-        principal_id, body.corpus_id, thread_id, len(turn.hits), len(turn.sentences),
-        turn.overall_rouge_l_f1, turn.citation_recall, turn.citation_precision,
-        turn.faithfulness,
-    )
-    return QaResponse(
-        query=body.query,
-        corpus_id=body.corpus_id,
-        thread_id=thread_id,
-        answer=turn.answer,
-        overall_rouge_l_f1=turn.overall_rouge_l_f1,
-        citation_recall=turn.citation_recall,
-        citation_precision=turn.citation_precision,
-        faithfulness=turn.faithfulness,
-        sentences=[SentenceScore(**s) for s in turn.sentences],
-        hits=[WikiHit(**h) for h in turn.hits],
-    )
+    finally:
+        tracer.end(
+            root_span,
+            status="error" if error_kind else "ok",
+            extra={"error_kind": error_kind} if error_kind else None,
+        )

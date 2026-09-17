@@ -51,6 +51,42 @@ def test_redact_passes_through_non_string() -> None:
     assert redact(3.14) == 3.14
 
 
+# ---- ADR-0011 §Context: redaction defects, verified by execution ----
+
+
+def test_redact_bearer_token_survives_no_longer() -> None:
+    """Pattern-ordering leak: `authorization`'s value class stopped at the
+    first space, consuming only the literal word 'Bearer' and leaving the
+    real token untouched. `bearer` now runs first and strips it whole."""
+    out = redact("Authorization: Bearer abc123xyz")
+    assert "abc123xyz" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_github_token_via_token_key() -> None:
+    out = redact("AGENTOPS_GITHUB_TOKEN=ghp_1234567890abcdef1234")
+    assert "ghp_1234567890abcdef1234" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_bare_github_token_without_key_prefix() -> None:
+    out = redact("token leaked in a log line: ghp_1234567890abcdef1234 end")
+    assert "ghp_1234567890abcdef1234" not in out
+
+
+def test_redact_jwt_secret_env_value() -> None:
+    out = redact("AGENTOPS_JWT_SECRET=supersecretvalue1234")
+    assert "supersecretvalue1234" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_database_dsn_userinfo() -> None:
+    out = redact("postgresql://appuser:s3cr3tpw@db.internal:5432/agentops")
+    assert "appuser" not in out
+    assert "s3cr3tpw" not in out
+    assert "db.internal:5432/agentops" in out  # host/db name is not a secret
+
+
 # ---- Tracer ----
 
 

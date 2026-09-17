@@ -22,6 +22,10 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-      - run: uv sync --extra dev
+      # ADR-0011: the tracing tests (tests/api/test_wiki_qa_tracing.py)
+      # import `opentelemetry` at module scope -- no skipif/importorskip,
+      # per that ADR's "CI stays offline and skip-free" commitment, so the
+      # `otel` extra must be installed rather than the test module skipped.
+      - run: uv sync --extra dev --extra otel
       - run: uv run ruff check .
       - run: uv run pytest -q

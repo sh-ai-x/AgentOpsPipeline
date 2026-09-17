@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _INSECURE_JWT_SECRETS = {"", "dev-only-please-rotate"}
 _ALLOWED_JWT_ALGORITHMS = {"HS256", "HS384", "HS512"}
 _ALLOWED_REASONING_EFFORTS = {"", "none", "low", "medium", "high", "xhigh", "max"}
+_ALLOWED_TRACE_EXPORTERS = {"none", "jsonl", "otlp"}
 
 
 class Settings(BaseSettings):
@@ -69,8 +70,17 @@ class Settings(BaseSettings):
     # when the client doesn't specify one.
     wiki_default_retrieval: str = "tfidf"
 
-    # Trace export (OTel spans per run)
+    # Trace export (OTel spans per run). ADR-0011: default "none" is
+    # byte-for-byte behavior-neutral -- no file on disk, no dependency on
+    # the `otel` extra, unless an operator explicitly opts in.
     runs_dir: str = "./runs"
+    trace_exporter: str = "none"  # none | jsonl | otlp
+    otlp_endpoint: str = "http://127.0.0.1:4318/v1/traces"
+    # Double opt-in (mirrors allow_dev_token/dev_token_any_provider above):
+    # turning on tracing must not, by itself, start shipping private wiki
+    # query text off-box. When False, `wiki.search` records query_len /
+    # query_sha256_prefix instead of the raw query.
+    trace_content: bool = False
 
     # Auth: principal for local dev
     dev_principal_id: str = "dev-user"
@@ -145,6 +155,18 @@ class Settings(BaseSettings):
                 f"AGENTOPS_REASONING_EFFORT must be one of "
                 f"{sorted(_ALLOWED_REASONING_EFFORTS)}; got "
                 f"{self.reasoning_effort!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _guard_trace_exporter(self) -> Settings:
+        """Reject an unknown AGENTOPS_TRACE_EXPORTER at startup rather than
+        at the first traced request -- same shape as `_guard_jwt_algorithm`
+        and `_guard_wiki_default_retrieval` above (ADR-0007 §4)."""
+        if self.trace_exporter not in _ALLOWED_TRACE_EXPORTERS:
+            raise ValueError(
+                f"AGENTOPS_TRACE_EXPORTER must be one of {sorted(_ALLOWED_TRACE_EXPORTERS)}; "
+                f"got {self.trace_exporter!r}."
             )
         return self
 

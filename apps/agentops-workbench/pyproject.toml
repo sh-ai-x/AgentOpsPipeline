@@ -43,6 +43,21 @@ dev = [
 dense = [
     "fastembed>=0.7,<1.0",
 ]
+# ADR-0011: real OpenTelemetry export for the wiki-chat path. Opt-in --
+# `Tracer` falls back to its no-op bookkeeping recorder when this extra
+# isn't installed; trace_exporter also defaults to "none", so installing
+# this alone changes nothing until AGENTOPS_TRACE_EXPORTER is set.
+otel = [
+    "opentelemetry-api>=1.27,<2",
+    "opentelemetry-sdk>=1.27,<2",
+]
+# Nested extra: only needed for AGENTOPS_TRACE_EXPORTER=otlp. HTTP/protobuf,
+# not gRPC -- gRPC pulls the compiled `grpcio` wheel, the most frequent
+# `uv sync` failure on arm64/Alpine and a bad fit for an 8GB CPU-only target
+# (ADR-0010 §Context). `uv sync --extra otel --extra otlp` to enable.
+otlp = [
+    "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
+]
 
 [build-system]
 requires = ["hatchling"]
