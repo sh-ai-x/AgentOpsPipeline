@@ -34,12 +34,13 @@
 > listed below) is unchanged — see the linked proposal and ADRs for
 > detail.
 
-A support-operations agent that turns a software issue into a grounded
-answer and an approval-gated ticket draft, plus an experiment workbench
-that compares prompt / topology / tool-integration choices on a 30-case
-human-reviewed benchmark. (See the pivot note above — this description is
-what's actually shipped on `main` today; it is being superseded, not
-deleted, as the adapter-pattern work lands.)
+A Next.js 15 web chat over a local **LLM Wiki directory** (Obsidian vault) —
+multi-turn retrieval-augmented conversation with per-turn groundedness metrics
+(Faithfulness, Citation Precision/Recall, ROUGE-L F1), Obsidian deep-links back
+to source notes, and a live per-stage latency dashboard. Built on LangGraph
+with a Wiki [EvidenceSourceAdapter](docs/adr/0007-evidence-source-adapter-pattern.md);
+the flagship flow is `agentops-oss-helper <github-repo-url>`, narrowed to
+the Wiki half per [ADR-0009](docs/adr/0009-oss-helper-docs-only-scope.md).
 
 ## Quickstart
 

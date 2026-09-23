@@ -19,14 +19,18 @@
 > [`phases/08-deployable-mvp/index.md`](phases/08-deployable-mvp/index.md)
 > for exit criteria.
 
-A support-operations agent that turns a repository issue into a *grounded*
-answer and an *approval-gated* ticket draft, plus an experiment workbench that
-compares prompt, workflow-topology and tool-integration choices on a frozen
-30-case benchmark. (Historical — see the pivot note above.)
+A **Next.js 15 web chat over a local LLM Wiki directory** (Obsidian vault) —
+multi-turn retrieval-augmented conversation with per-turn groundedness metrics
+(Faithfulness, Citation Precision/Recall, ROUGE-L F1), Obsidian deep-links back
+to source notes, and a live per-stage latency dashboard. Built on LangGraph
+with a Wiki-only [EvidenceSourceAdapter](apps/agentops-workbench/docs/adr/0007-evidence-source-adapter-pattern.md);
+the flagship flow is `agentops-oss-helper <github-repo-url>`,
+[Wiki-only per ADR-0009](apps/agentops-workbench/docs/adr/0009-oss-helper-docs-only-scope.md).
 
-The contribution is one complete application and one measurement study — not a
-general-purpose agent framework. LangGraph from the first release, LangChain
-integrations, an MCP document server and a pinned filesystem server.
+The contribution is one complete application — not a general-purpose agent
+framework. LangGraph from the first release, an MCP document server and a
+pinned filesystem server, plus the Wiki Adapter abstraction that lets the same
+retrieval / groundedness stack point at any markdown tree.
 
 - **Scope of record:** [`docs/proposals/agentops-workbench-proposal.md`](docs/proposals/agentops-workbench-proposal.md)
 - **Application:** [`apps/agentops-workbench/`](apps/agentops-workbench/) — `src/`, `fixtures/`, `experiments/`, `docker/`, test count tracked in [`apps/agentops-workbench/docs/EVIDENCE_CARD.md`](apps/agentops-workbench/docs/EVIDENCE_CARD.md)
